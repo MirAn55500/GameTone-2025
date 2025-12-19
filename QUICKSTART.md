@@ -6,30 +6,45 @@
 pip install -r requirements.txt
 ```
 
-## 2. Получение API ключа
+## 2. Настройка API ключа
 
 1. Зарегистрируйтесь на платформе геймтона
 2. Войдите в личный кабинет
 3. Скопируйте ваш API ключ
 
+4. Создайте файл `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+
+5. Откройте `.env` и вставьте ваш API ключ:
+   ```
+   API_KEY=your_api_key_here
+   BASE_URL=https://games-test.datsteam.dev
+   ```
+
 ## 3. Запуск клиента
 
-### Тестовый сервер (рекомендуется для начала)
+### Базовый запуск
 
 ```bash
-python game_client.py YOUR_API_KEY https://games-test.datsteam.dev
-```
-
-### Основной сервер (для финальных раундов)
-
-```bash
-python game_client.py YOUR_API_KEY https://games.datsteam.dev
+python game_client.py
 ```
 
 ### С подробным выводом (для отладки)
 
 ```bash
-python game_client.py YOUR_API_KEY https://games-test.datsteam.dev --verbose
+python game_client.py --verbose
+```
+
+### Переопределение сервера через аргумент
+
+```bash
+# Тестовый сервер
+python game_client.py https://games-test.datsteam.dev
+
+# Основной сервер
+python game_client.py https://games.datsteam.dev
 ```
 
 ## 4. Что происходит
@@ -53,6 +68,19 @@ python game_client.py YOUR_API_KEY https://games-test.datsteam.dev --verbose
 3. **Проверьте API ключ** - если есть ошибки авторизации, проверьте ключ
 4. **Используйте --verbose** - для понимания что происходит
 
+## Визуализация
+
+Для визуального наблюдения за игрой:
+
+1. Откройте `visualizer.html` в браузере
+2. Введите API ключ и URL сервера
+3. Нажмите "Запустить"
+
+Визуализатор автоматически обновляется и показывает:
+- Карту с объектами
+- Статистику игры
+- Информацию о юнитах
+
 ## Решение проблем
 
 ### Ошибка авторизации
@@ -66,4 +94,9 @@ python game_client.py YOUR_API_KEY https://games-test.datsteam.dev --verbose
 ### Клиент не делает ходы
 - Проверьте, что раунд активен
 - Используйте --verbose для отладки
+
+### Визуализатор не работает
+- Убедитесь, что API ключ правильный
+- Проверьте консоль браузера (F12) на ошибки
+- Убедитесь, что сервер доступен
 

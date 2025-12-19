@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Визуализатор DatsJingleBang</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: linear-gradient(135deg, #1e1e2e 0%, #11111b 100%);
+      color: #cdd6f4;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      padding: 20px;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #89b4fa;
+      text-shadow: 0 0 10px rgba(137, 180, 250, 0.5);
+    }
+
+    .controls {
+      background: rgba(49, 50, 68, 0.8);
+      padding: 15px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+      display: flex;
+      gap: 15px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .controls input, .controls select, .controls button {
+      padding: 8px 15px;
+      border: 1px solid #45475a;
+      border-radius: 5px;
+      background: #181825;
+      color: #cdd6f4;
+      font-size: 14px;
+    }
+
+    .controls input {
+      flex: 1;
+      min-width: 200px;
+    }
+
+    .controls button {
+      background: #89b4fa;
+      color: #1e1e2e;
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+      transition: all 0.3s;
+    }
+
+    .controls button:hover {
+      background: #74c7ec;
+      transform: translateY(-2px);
+    }
+
+    .controls button:disabled {
+      background: #45475a;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .status {
+      background: rgba(49, 50, 68, 0.8);
+      padding: 15px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+    }
+
+    .status-item {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .status-label {
+      font-size: 12px;
+      color: #6c7086;
+      margin-bottom: 5px;
+    }
+
+    .status-value {
+      font-size: 18px;
+      font-weight: bold;
+      color: #a6e3a1;
+    }
+
+    .main-content {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 20px;
+    }
+
+    @media (max-width: 1200px) {
+      .main-content {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    #arena {
+      display: grid;
+      gap: 2px;
+      background: #313244;
+      padding: 8px;
+      border-radius: 10px;
+      border: 2px solid #89b4fa;
+      width: fit-content;
+      margin: 0 auto;
+      box-shadow: 0 0 20px rgba(137, 180, 250, 0.3);
+    }
+
+    .cell {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: bold;
+      color: white;
+      text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+      border-radius: 2px;
+      transition: all 0.1s;
+    }
+
+    .cell:hover {
+      transform: scale(1.2);
+      z-index: 10;
+      position: relative;
+    }
+
+    .wall { 
+      background: #6c7086; 
+      box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.5);
+    }
+
+    .obstacle { 
+      background: #f38ba8; 
+      box-shadow: 0 0 5px rgba(243, 139, 168, 0.5);
+    }
+
+    .bomb { 
+      background: #fab387; 
+      box-shadow: 0 0 8px rgba(250, 179, 135, 0.8);
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+
+    .bomber { 
+      background: #89b4fa; 
+      box-shadow: 0 0 8px rgba(137, 180, 250, 0.8);
+    }
+
+    .enemy { 
+      background: #ff0000; 
+      box-shadow: 0 0 12px rgba(255, 0, 0, 1), inset 0 0 8px rgba(255, 100, 100, 0.8);
+      animation: enemyPulse 1s ease-in-out infinite;
+      border: 2px solid #ff4444;
+    }
+    
+    @keyframes enemyPulse {
+      0%, 100% { 
+        box-shadow: 0 0 12px rgba(255, 0, 0, 1), inset 0 0 8px rgba(255, 100, 100, 0.8);
+      }
+      50% { 
+        box-shadow: 0 0 18px rgba(255, 0, 0, 1.2), inset 0 0 12px rgba(255, 150, 150, 1);
+      }
+    }
+
+    .mob-ghost { 
+      background: #cba6f7; 
+      box-shadow: 0 0 8px rgba(203, 166, 247, 0.8);
+      animation: float 2s ease-in-out infinite;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-2px); }
+    }
+
+    .mob-patrol { 
+      background: #f9e2af; 
+      box-shadow: 0 0 8px rgba(249, 226, 175, 0.8);
+    }
+
+    .empty { 
+      background: #181825; 
+    }
+
+    .safe { 
+      box-shadow: 0 0 10px #a6e3a1, inset 0 0 10px #a6e3a1;
+      animation: glow 1s ease-in-out infinite;
+    }
+
+    @keyframes glow {
+      0%, 100% { box-shadow: 0 0 10px #a6e3a1, inset 0 0 10px #a6e3a1; }
+      50% { box-shadow: 0 0 15px #a6e3a1, inset 0 0 15px #a6e3a1; }
+    }
+
+    .sidebar {
+      background: rgba(49, 50, 68, 0.8);
+      padding: 20px;
+      border-radius: 10px;
+      height: fit-content;
+    }
+
+    .sidebar h2 {
+      color: #89b4fa;
+      margin-bottom: 15px;
+      font-size: 18px;
+    }
+
+    .bomber-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .bomber-item {
+      background: rgba(24, 24, 37, 0.5);
+      padding: 10px;
+      border-radius: 5px;
+      border-left: 3px solid #89b4fa;
+    }
+
+    .bomber-item.dead {
+      opacity: 0.5;
+      border-left-color: #f38ba8;
+    }
+
+    .bomber-info {
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .bomber-name {
+      font-weight: bold;
+      color: #89b4fa;
+    }
+
+    .bomber-stats {
+      color: #6c7086;
+      font-size: 11px;
+    }
+
+    .error {
+      background: rgba(243, 139, 168, 0.2);
+      border: 1px solid #f38ba8;
+      color: #f38ba8;
+      padding: 10px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+    }
+
+    .legend {
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid #45475a;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+
+    .legend-color {
+      width: 20px;
+      height: 20px;
+      border-radius: 2px;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #6c7086;
+    }
+
+    .zoom-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .zoom-controls button {
+      width: 35px;
+      height: 35px;
+      padding: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎮 Визуализатор DatsJingleBang</h1>
+
+    <div class="controls">
+      <input type="text" id="apiKey" placeholder="API ключ (не нужен при использовании локального сервера)" />
+      <input type="text" id="baseUrl" placeholder="URL сервера" value="http://localhost:5000" />
+      <label style="display: flex; align-items: center; gap: 5px;">
+        <input type="checkbox" id="useLocalServer" checked />
+        <span>Использовать локальный сервер</span>
+      </label>
+      <select id="updateInterval">
+        <option value="1000" selected>Обновление: ~1/сек (безопасно)</option>
+        <option value="1500">Обновление: ~0.67/сек (очень безопасно)</option>
+        <option value="2000">Обновление: ~0.5/сек (максимально безопасно)</option>
+      </select>
+      <button id="startBtn" onclick="startVisualization()">▶ Запустить</button>
+      <button id="stopBtn" onclick="stopVisualization()" disabled>⏸ Остановить</button>
+      <div class="zoom-controls">
+        <button onclick="zoomOut()">−</button>
+        <button onclick="zoomIn()">+</button>
+        <button onclick="resetZoom()">⌂</button>
+      </div>
+    </div>
+
+    <div id="error" class="error" style="display: none;"></div>
+
+    <div class="status" id="status">
+      <div class="status-item">
+        <div class="status-label">Игрок</div>
+        <div class="status-value" id="playerName">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">Счёт</div>
+        <div class="status-value" id="score">0</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">Раунд</div>
+        <div class="status-value" id="round">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">Живых юнитов</div>
+        <div class="status-value" id="aliveCount">0</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">Препятствий</div>
+        <div class="status-value" id="obstaclesCount">0</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">Бомб</div>
+        <div class="status-value" id="bombsCount">0</div>
+      </div>
+    </div>
+
+    <div class="stats-container" style="background: rgba(49, 50, 68, 0.8); padding: 15px; border-radius: 10px; margin-bottom: 20px; overflow-x: auto;">
+      <h2 style="color: #89b4fa; margin-bottom: 15px; font-size: 18px;">Статистика раунда</h2>
+      <table id="statsTable" style="width: 100%; border-collapse: collapse; font-size: 12px;">
+        <thead>
+          <tr style="background: rgba(137, 180, 250, 0.2);">
+            <th style="padding: 8px; text-align: left; border: 1px solid #45475a;">Счёт</th>
+            <th style="padding: 8px; text-align: left; border: 1px solid #45475a;">Пройденный путь</th>
+            <th style="padding: 8px; text-align: left; border: 1px solid #45475a;">Очки за уничтожение</th>
+            <th style="padding: 8px; text-align: left; border: 1px solid #45475a;">Установлено бомб</th>
+            <th style="padding: 8px; text-align: left; border: 1px solid #45475a;">Уничтожено (друж/враг/моб)</th>
+            <th style="padding: 8px; text-align: left; border: 1px solid #45475a;">Препятствий за взрыв (1/2/3/4)</th>
+            <th style="padding: 8px; text-align: left; border: 1px solid #45475a;">Множественные (друж/враг/моб)</th>
+            <th style="padding: 8px; text-align: left; border: 1px solid #45475a;">Возрождений</th>
+            <th style="padding: 8px; text-align: left; border: 1px solid #45475a;">Штраф за возрождения</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="padding: 8px; border: 1px solid #45475a; color: #fab387;">0</td>
+            <td style="padding: 8px; border: 1px solid #45475a;">0</td>
+            <td style="padding: 8px; border: 1px solid #45475a;">—</td>
+            <td style="padding: 8px; border: 1px solid #45475a;">0</td>
+            <td style="padding: 8px; border: 1px solid #45475a;">—</td>
+            <td style="padding: 8px; border: 1px solid #45475a;">—</td>
+            <td style="padding: 8px; border: 1px solid #45475a;">—</td>
+            <td style="padding: 8px; border: 1px solid #45475a;">0</td>
+            <td style="padding: 8px; border: 1px solid #45475a;">0</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="main-content">
+      <div>
+        <div id="mapInfo" style="text-align: center; margin-bottom: 10px; color: #6c7086; font-size: 12px;"></div>
+        <div id="arena" style="display: none;"></div>
+        <div id="loading" class="loading">Нажмите "Запустить" для начала визуализации</div>
+      </div>
+
+      <div class="sidebar">
+        <h2>Юниты</h2>
+        <div class="bomber-list" id="bomberList">
+          <div class="loading">Нет данных</div>
+        </div>
+
+        <div class="legend">
+          <h2>Легенда</h2>
+          <div class="legend-item">
+            <div class="legend-color wall"></div>
+            <span>Стена (непроходимая)</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color obstacle"></div>
+            <span>Препятствие (разрушаемое)</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color bomb"></div>
+            <span>Бомба</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color bomber"></div>
+            <span>Ваш юнит</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color enemy"></div>
+            <span>Враг</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color mob-ghost"></div>
+            <span>Призрак</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color mob-patrol"></div>
+            <span>Патрульный</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color safe"></div>
+            <span>Неуязвимость</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let mapSize = [30, 30];
+    let grid = [];
+    let updateInterval = null;
+    let cellSize = 20;
+    let apiKey = '';
+    let baseUrl = '';
+    
+    // Rate limiting
+    let lastRequestTime = 0;
+    let requestTimes = [];
+    let consecutive429Errors = 0;
+    let currentInterval = 1000; // Начальный интервал 1000мс (1 запрос/сек) - безопасно
+
+    // Попытка загрузить API ключ из localStorage
+    const savedApiKey = localStorage.getItem('apiKey');
+    const savedBaseUrl = localStorage.getItem('baseUrl');
+    if (savedApiKey) {
+      document.getElementById('apiKey').value = savedApiKey;
+    }
+    if (savedBaseUrl) {
+      document.getElementById('baseUrl').value = savedBaseUrl;
+    }
+
+    function resetGrid() {
+      const [w, h] = mapSize;
+      grid = Array(h).fill().map(() => Array(w).fill(null));
+    }
+
+    function place(x, y, obj) {
+      if (x >= 0 && y >= 0 && y < grid.length && x < grid[0]?.length) {
+        grid[y][x] = obj;
+      }
+    }
+
+    function showError(message) {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = message;
+      errorEl.style.display = 'block';
+      setTimeout(() => {
+        errorEl.style.display = 'none';
+      }, 5000);
+    }
+
+    function rateLimit() {
+      const now = Date.now();
+      // Удаляем запросы старше 1 секунды
+      requestTimes = requestTimes.filter(t => now - t < 1000);
+      
+      // Максимум 1 запрос в секунду для безопасности
+      if (requestTimes.length >= 1) {
+        const waitTime = 1000 - (now - requestTimes[0]);
+        if (waitTime > 0) {
+          return waitTime;
+        }
+      }
+      
+      requestTimes.push(now);
+      return 0;
+    }
+
+    async function fetchArena() {
+      const useLocal = document.getElementById('useLocalServer').checked;
+      
+      if (!useLocal && !apiKey) {
+        showError('API ключ не указан');
+        return;
+      }
+
+      // Rate limiting только для прямого подключения
+      if (!useLocal) {
+        const waitTime = rateLimit();
+        if (waitTime > 0) {
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+      }
+
+      try {
+        const url = `${baseUrl}/api/arena`;
+        const headers = useLocal ? {} : { 'X-Auth-Token': apiKey };
+        const res = await fetch(url, { headers });
+
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403) {
+            throw new Error('Неверный API ключ');
+          }
+          
+          // Обработка ошибки 429
+          if (res.status === 429) {
+            consecutive429Errors++;
+            const backoffTime = Math.min(consecutive429Errors * 500, 5000); // До 5 секунд
+            
+            showError(`Слишком много запросов (429). Ожидание ${backoffTime/1000}с...`);
+            
+            // Увеличиваем интервал обновления
+            if (updateInterval) {
+              clearInterval(updateInterval);
+              currentInterval = Math.min(currentInterval * 1.5, 5000);
+              updateInterval = setInterval(fetchArena, currentInterval);
+              
+              // Обновляем селект
+              document.getElementById('updateInterval').value = currentInterval;
+            }
+            
+            // Ждем перед следующим запросом
+            await new Promise(resolve => setTimeout(resolve, backoffTime));
+            return; // Пропускаем этот запрос
+          }
+          
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+
+        // Успешный запрос - сбрасываем счетчик ошибок
+        if (consecutive429Errors > 0) {
+          consecutive429Errors = 0;
+          // Восстанавливаем нормальный интервал
+          const selectedInterval = parseInt(document.getElementById('updateInterval').value);
+          if (currentInterval !== selectedInterval && updateInterval) {
+            clearInterval(updateInterval);
+            currentInterval = selectedInterval;
+            updateInterval = setInterval(fetchArena, currentInterval);
+          }
+        }
+
+        const data = await res.json();
+
+        // Обновляем размер карты
+        if (data.map_size) {
+          mapSize = data.map_size;
+        }
+        resetGrid();
+
+        // Стены
+        if (data.arena?.walls) {
+          data.arena.walls.forEach(([x, y]) => place(x, y, { type: 'wall' }));
+        }
+
+        // Препятствия
+        if (data.arena?.obstacles) {
+          data.arena.obstacles.forEach(([x, y]) => place(x, y, { type: 'obstacle' }));
+        }
+
+        // Бомбы
+        if (data.arena?.bombs) {
+          data.arena.bombs.forEach(bomb => {
+            place(bomb.pos[0], bomb.pos[1], {
+              type: 'bomb',
+              timer: bomb.timer,
+              range: bomb.range
+            });
+          });
+        }
+
+        // Мои юниты (все 6, даже если не видны)
+        if (data.bombers) {
+          data.bombers.forEach((b, index) => {
+            // Размещаем всех бомберов, даже если они не в зоне видимости
+            place(b.pos[0], b.pos[1], {
+              type: 'bomber',
+              safe: b.safe_time > 0,
+              id: b.id,
+              index: index + 1, // Номер бомбера (1-6)
+              bombs: b.bombs_available,
+              armor: b.armor,
+              alive: b.alive
+            });
+          });
+        }
+
+        // Враги
+        if (data.enemies) {
+          data.enemies.forEach(e => {
+            place(e.pos[0], e.pos[1], {
+              type: 'enemy',
+              safe: e.safe_time > 0
+            });
+          });
+        }
+
+        // Мобы
+        if (data.mobs) {
+          data.mobs.forEach(m => {
+            place(m.pos[0], m.pos[1], {
+              type: m.type === 'ghost' ? 'mob-ghost' : 'mob-patrol',
+              safe: m.safe_time > 0
+            });
+          });
+        }
+
+        render();
+        updateInfo(data);
+        updateBomberList(data.bombers || []);
+      } catch (err) {
+        if (err.message.includes('429')) {
+          // Ошибка 429 уже обработана выше
+          return;
+        }
+        showError(`Ошибка: ${err.message}`);
+        console.error('Ошибка получения данных:', err);
+      }
+    }
+
+    function render() {
+      const arenaEl = document.getElementById('arena');
+      const [w, h] = mapSize;
+      
+      if (!w || !h || w === 0 || h === 0) {
+        console.warn('Неверный размер карты:', mapSize);
+        return;
+      }
+      
+      // Находим всех живых бомберов для центрирования
+      const bombers = [];
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const cell = grid[y]?.[x];
+          if (cell && cell.type === 'bomber' && cell.alive !== false) {
+            bombers.push({x, y, id: cell.id, index: cell.index});
+          }
+        }
+      }
+      
+      // Вычисляем центр всех бомберов
+      let centerX = w / 2;
+      let centerY = h / 2;
+      if (bombers.length > 0) {
+        centerX = bombers.reduce((sum, b) => sum + b.x, 0) / bombers.length;
+        centerY = bombers.reduce((sum, b) => sum + b.y, 0) / bombers.length;
+      } else {
+        // Если нет бомберов, центрируем на середине карты
+        centerX = w / 2;
+        centerY = h / 2;
+      }
+      
+      // Размер видимой области (окно вокруг бомберов)
+      const viewRadius = 20; // Радиус видимости (увеличен для лучшего обзора)
+      const minX = Math.max(0, Math.floor(centerX - viewRadius));
+      const maxX = Math.min(w, Math.ceil(centerX + viewRadius));
+      const minY = Math.max(0, Math.floor(centerY - viewRadius));
+      const maxY = Math.min(h, Math.ceil(centerY + viewRadius));
+      
+      const viewWidth = maxX - minX;
+      const viewHeight = maxY - minY;
+      
+      arenaEl.style.gridTemplateColumns = `repeat(${viewWidth}, ${cellSize}px)`;
+      arenaEl.style.display = 'grid';
+      document.getElementById('loading').style.display = 'none';
+
+      let html = '';
+
+      for (let y = minY; y < maxY; y++) {
+        for (let x = minX; x < maxX; x++) {
+          const cell = grid[y]?.[x] || { type: 'empty' };
+          const cls = cell.type + (cell.safe ? ' safe' : '');
+          let content = '';
+          
+          if (cell.type === 'bomb') {
+            content = Math.ceil(cell.timer);
+          } else if (cell.type === 'bomber') {
+            // Показываем номер бомбера (1-6) из данных
+            content = cell.index || 'B';
+          } else if (cell.type === 'enemy') {
+            content = '⚔'; // Более заметный символ для врага
+          } else if (cell.type === 'mob-ghost') {
+            content = '👻';
+          } else if (cell.type === 'mob-patrol') {
+            content = '👮';
+          }
+          
+          html += `<div class="cell ${cls}" title="X:${x} Y:${y}">${content}</div>`;
+        }
+      }
+      
+      arenaEl.innerHTML = html;
+      
+      // Показываем информацию о центрировании
+      const info = document.getElementById('mapInfo');
+      if (info) {
+        const bomberInfo = bombers.map(b => `#${b.index || '?'} [${b.x},${b.y}]`).join(' ');
+        info.textContent = `Центр: [${Math.floor(centerX)}, ${Math.floor(centerY)}] | Видимая область: ${viewWidth}x${viewHeight} | Бомберов: ${bombers.length}/6 ${bomberInfo ? '| ' + bomberInfo : ''}`;
+      }
+    }
+
+    // Статистика
+    let stats = {
+      score: 0,
+      distance: 0,
+      obstaclesDestroyed: 0,
+      pointsFromObstacles: 0,
+      pointsFromKills: 0,
+      pointsFromMobKills: 0,
+      bombsPlaced: 0,
+      bomberKillsEnemy: 0,
+      bomberKillsFriendly: 0,
+      bomberKillsSystem: 0,
+      obstaclesPerBomb: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0},
+      multiKillEnemy: 0,
+      multiKillFriendly: 0,
+      multiKillSystem: 0,
+      respawns: 0,
+      pointsLostToRespawn: 0
+    };
+
+    function updateInfo(data) {
+      // Обновляем базовую информацию
+      document.getElementById('playerName').textContent = data.player || '—';
+      stats.score = data.raw_score || 0;
+      document.getElementById('score').textContent = stats.score;
+      document.getElementById('round').textContent = data.round || '—';
+      
+      const alive = (data.bombers || []).filter(b => b.alive).length;
+      document.getElementById('aliveCount').textContent = `${alive}/${data.bombers?.length || 0}`;
+      document.getElementById('obstaclesCount').textContent = (data.arena?.obstacles || []).length;
+      document.getElementById('bombsCount').textContent = (data.arena?.bombs || []).length;
+      
+      // Обновляем статистику (если доступна)
+      if (data.stats) {
+        stats.distance = data.stats.distance || 0;
+        stats.obstaclesDestroyed = data.stats.obstaclesDestroyed || 0;
+        stats.pointsFromObstacles = data.stats.pointsFromObstacles || 0;
+        stats.pointsFromKills = data.stats.pointsFromKills || 0;
+        stats.pointsFromMobKills = data.stats.pointsFromMobKills || 0;
+        stats.bombsPlaced = data.stats.bombsPlaced || 0;
+        stats.bomberKillsEnemy = data.stats.bomberKillsEnemy || 0;
+        stats.bomberKillsFriendly = data.stats.bomberKillsFriendly || 0;
+        stats.bomberKillsSystem = data.stats.bomberKillsSystem || 0;
+        stats.respawns = data.stats.respawns || 0;
+        stats.pointsLostToRespawn = data.stats.pointsLostToRespawn || 0;
+        stats.multiKillEnemy = data.stats.multiKillEnemy || 0;
+        stats.multiKillFriendly = data.stats.multiKillFriendly || 0;
+        stats.multiKillSystem = data.stats.multiKillSystem || 0;
+        
+        if (data.stats.bombsDestroyedObstacles_0 !== undefined) {
+          stats.obstaclesPerBomb[0] = data.stats.bombsDestroyedObstacles_0 || 0;
+          stats.obstaclesPerBomb[1] = data.stats.bombsDestroyedObstacles_1 || 0;
+          stats.obstaclesPerBomb[2] = data.stats.bombsDestroyedObstacles_2 || 0;
+          stats.obstaclesPerBomb[3] = data.stats.bombsDestroyedObstacles_3 || 0;
+          stats.obstaclesPerBomb[4] = data.stats.bombsDestroyedObstacles_4 || 0;
+        }
+      }
+      
+      updateStatsTable();
+    }
+    
+    function updateStatsTable() {
+      const statsTable = document.getElementById('statsTable');
+      if (!statsTable) return;
+      
+      const tbody = statsTable.querySelector('tbody');
+      if (!tbody) return;
+      
+      const pointsTotal = stats.pointsFromObstacles + stats.pointsFromKills + stats.pointsFromMobKills;
+      const obstaclesPerBombStr = [
+        stats.obstaclesPerBomb[1] || 0,
+        stats.obstaclesPerBomb[2] || 0,
+        stats.obstaclesPerBomb[3] || 0,
+        stats.obstaclesPerBomb[4] || 0
+      ].join(' / ');
+      
+      tbody.innerHTML = `
+        <tr>
+          <td style="padding: 8px; border: 1px solid #45475a; color: #fab387;">${stats.score || 0}</td>
+          <td style="padding: 8px; border: 1px solid #45475a;">${stats.distance || 0}</td>
+          <td style="padding: 8px; border: 1px solid #45475a;">${pointsTotal || '—'}</td>
+          <td style="padding: 8px; border: 1px solid #45475a;">${stats.bombsPlaced || 0}</td>
+          <td style="padding: 8px; border: 1px solid #45475a;">${stats.bomberKillsFriendly || 0} / ${stats.bomberKillsEnemy || 0} / ${stats.bomberKillsSystem || 0}</td>
+          <td style="padding: 8px; border: 1px solid #45475a;">${obstaclesPerBombStr || '—'}</td>
+          <td style="padding: 8px; border: 1px solid #45475a;">${stats.multiKillFriendly || 0} / ${stats.multiKillEnemy || 0} / ${stats.multiKillSystem || 0}</td>
+          <td style="padding: 8px; border: 1px solid #45475a;">${stats.respawns || 0}</td>
+          <td style="padding: 8px; border: 1px solid #45475a;">${stats.pointsLostToRespawn || 0}</td>
+        </tr>
+      `;
+    }
+
+    function updateBomberList(bombers) {
+      const listEl = document.getElementById('bomberList');
+      
+      if (!bombers || bombers.length === 0) {
+        listEl.innerHTML = '<div class="loading">Нет юнитов</div>';
+        return;
+      }
+
+      listEl.innerHTML = bombers.map(b => {
+        const status = b.alive ? 'Жив' : 'Мёртв';
+        const canMove = b.can_move ? 'Может двигаться' : 'Движется...';
+        return `
+          <div class="bomber-item ${b.alive ? '' : 'dead'}">
+            <div class="bomber-info">
+              <div class="bomber-name">${b.id.substring(0, 12)}...</div>
+              <div class="bomber-stats">
+                Позиция: [${b.pos[0]}, ${b.pos[1]}]<br>
+                Статус: ${status}<br>
+                ${canMove}<br>
+                Бомб: ${b.bombs_available} | Броня: ${b.armor || 0}
+                ${b.safe_time > 0 ? ` | Неуязвим: ${(b.safe_time / 1000).toFixed(1)}с` : ''}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function startVisualization() {
+      const useLocal = document.getElementById('useLocalServer').checked;
+      apiKey = document.getElementById('apiKey').value.trim();
+      baseUrl = document.getElementById('baseUrl').value.trim();
+
+      if (!useLocal && !apiKey) {
+        showError('Укажите API ключ или включите локальный сервер');
+        return;
+      }
+
+      if (!baseUrl) {
+        showError('Укажите URL сервера');
+        return;
+      }
+      
+      if (useLocal) {
+        console.log('Использование локального веб-сервера');
+      }
+
+      // Сохраняем в localStorage
+      localStorage.setItem('apiKey', apiKey);
+      localStorage.setItem('baseUrl', baseUrl);
+
+      const interval = parseInt(document.getElementById('updateInterval').value);
+      currentInterval = interval;
+      consecutive429Errors = 0; // Сбрасываем счетчик ошибок
+      
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+
+      // Первый запрос сразу
+      fetchArena();
+
+      // Затем по интервалу
+      updateInterval = setInterval(fetchArena, interval);
+    }
+
+    function stopVisualization() {
+      if (updateInterval) {
+        clearInterval(updateInterval);
+        updateInterval = null;
+      }
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+    }
+
+    function zoomIn() {
+      cellSize = Math.min(cellSize + 2, 40);
+      if (updateInterval) {
+        render();
+      }
+    }
+
+    function zoomOut() {
+      cellSize = Math.max(cellSize - 2, 12);
+      if (updateInterval) {
+        render();
+      }
+    }
+
+    function resetZoom() {
+      cellSize = 20;
+      if (updateInterval) {
+        render();
+      }
+    }
+
+    // Остановка при закрытии
+    window.addEventListener('beforeunload', stopVisualization);
+  </script>
+</body>
+</html>
+

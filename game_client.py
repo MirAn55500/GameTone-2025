@@ -6,7 +6,9 @@
 import requests
 import time
 import math
-from typing import List, Dict, Tuple, Optional
+import random
+import heapq
+from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -47,6 +49,12 @@ class Position:
     
     def __hash__(self):
         return hash((self.x, self.y))
+    
+    def __lt__(self, other):
+        return (self.x, self.y) < (other.x, other.y)
+
+    def __repr__(self):
+        return f"({self.x}, {self.y})"
 
 
 @dataclass
@@ -89,16 +97,26 @@ class Mob:
 class GameClient:
     """Клиент для игры"""
     
-    def __init__(self, api_key: str, base_url: str = "https://games.datsteam.dev"):
+    def __init__(self, api_key: str, base_url: str = "https://games.datsteam.dev", use_local_api: bool = False):
         self.api_key = api_key
         self.base_url = base_url
-        self.session = requests.Session()
-        self.session.headers.update({"X-Auth-Token": api_key})
+        self.use_local_api = use_local_api
+        
+        if use_local_api:
+            # Используем локальный веб-сервер
+            from game_api import GameAPI
+            self.api = GameAPI(api_key, base_url)
+            self.base_url = "http://localhost:5000"
+        else:
+            # Прямое подключение к API
+            self.session = requests.Session()
+            self.session.headers.update({"X-Auth-Token": api_key})
+            self.api = None
         
         # Состояние игры
         self.map_size: Optional[Tuple[int, int]] = None
-        self.walls: List[Position] = []
-        self.obstacles: List[Position] = []
+        self.walls: Set[Position] = set()
+        self.obstacles: Set[Position] = set()
         self.bombers: List[Bomber] = []
         self.bombs: List[Bomb] = []
         self.enemies: List[Enemy] = []
@@ -111,74 +129,113 @@ class GameClient:
         self.bomb_range = 1  # текущий радиус бомбы
         self.bomb_delay = 8000  # время до взрыва в мс
         
-        # Время последнего запроса (для ограничения 3 запроса/сек)
+        # Rate limiting
         self.last_request_time = 0
         self.request_times = []
+        self.last_booster_429_error = 0
+        self.booster_check_skip_until = 0
     
     def _rate_limit(self):
-        """Ограничение скорости запросов (3 в секунду)"""
+        """Ограничение скорости запросов"""
         now = time.time()
-        # Удаляем запросы старше 1 секунды
         self.request_times = [t for t in self.request_times if now - t < 1.0]
-        
-        if len(self.request_times) >= 3:
+        if len(self.request_times) >= 4:  # Лимит чуть выше для надежности
             sleep_time = 1.0 - (now - self.request_times[0])
             if sleep_time > 0:
                 time.sleep(sleep_time)
-        
         self.request_times.append(time.time())
     
-    def get_arena(self) -> Dict:
+    def get_arena(self, retry_count: int = 3) -> Dict:
         """Получить состояние арены"""
-        self._rate_limit()
-        response = self.session.get(f"{self.base_url}/api/arena")
-        response.raise_for_status()
-        return response.json()
+        if self.use_local_api and self.api:
+            return self.api.get_arena(use_cache=True)
+        
+        for attempt in range(retry_count):
+            try:
+                self._rate_limit()
+                response = self.session.get(f"{self.base_url}/api/arena")
+                if response.status_code == 429:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException:
+                if attempt == retry_count - 1: raise
+                time.sleep(0.5)
     
-    def move_bombers(self, commands: List[Dict]) -> Dict:
+    def move_bombers(self, commands: List[Dict], retry_count: int = 2) -> Dict:
         """Отправить команды движения"""
-        self._rate_limit()
-        payload = {"bombers": commands}
-        response = self.session.post(f"{self.base_url}/api/move", json=payload)
-        response.raise_for_status()
-        return response.json()
-    
-    def get_boosters(self) -> Dict:
+        if not commands: return {}
+        
+        if self.use_local_api and self.api:
+            return self.api.move_bombers(commands)
+        
+        for attempt in range(retry_count):
+            try:
+                self._rate_limit()
+                payload = {"bombers": commands}
+                response = self.session.post(f"{self.base_url}/api/move", json=payload)
+                if response.status_code == 429:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException:
+                if attempt == retry_count - 1: raise
+                time.sleep(0.5)
+
+    def get_boosters(self, retry_count: int = 2) -> Dict:
         """Получить доступные улучшения"""
-        self._rate_limit()
-        response = self.session.get(f"{self.base_url}/api/booster")
-        response.raise_for_status()
-        return response.json()
+        if self.use_local_api and self.api:
+            return self.api.get_boosters()
+
+        for attempt in range(retry_count):
+            try:
+                self._rate_limit()
+                response = self.session.get(f"{self.base_url}/api/booster")
+                if response.status_code == 429:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException:
+                if attempt == retry_count - 1: raise
+                time.sleep(0.5)
     
-    def buy_booster(self, booster_type: int) -> Dict:
+    def buy_booster(self, booster_type: int, retry_count: int = 2) -> Dict:
         """Купить улучшение"""
-        self._rate_limit()
-        payload = {"booster": booster_type}
-        response = self.session.post(f"{self.base_url}/api/booster", json=payload)
-        response.raise_for_status()
-        return response.json()
+        if self.use_local_api and self.api:
+            return self.api.buy_booster(booster_type)
+
+        for attempt in range(retry_count):
+            try:
+                self._rate_limit()
+                payload = {"booster": booster_type}
+                response = self.session.post(f"{self.base_url}/api/booster", json=payload)
+                if response.status_code == 429:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException:
+                if attempt == retry_count - 1: raise
+                time.sleep(0.5)
     
     def update_state(self):
         """Обновить состояние игры"""
         data = self.get_arena()
         
-        # Размер карты
         if "map_size" in data:
             self.map_size = tuple(data["map_size"])
         
-        # Стены
-        self.walls = [Position(x, y) for x, y in data.get("arena", {}).get("walls", [])]
+        self.walls = {Position(x, y) for x, y in data.get("arena", {}).get("walls", [])}
+        self.obstacles = {Position(x, y) for x, y in data.get("arena", {}).get("obstacles", [])}
         
-        # Препятствия
-        self.obstacles = [Position(x, y) for x, y in data.get("arena", {}).get("obstacles", [])]
-        
-        # Бомбы
         self.bombs = []
         for bomb_data in data.get("arena", {}).get("bombs", []):
             pos = Position(bomb_data["pos"][0], bomb_data["pos"][1])
             self.bombs.append(Bomb(pos, bomb_data["timer"], bomb_data["range"]))
         
-        # Юниты
         self.bombers = []
         for bomber_data in data.get("bombers", []):
             pos = Position(bomber_data["pos"][0], bomber_data["pos"][1])
@@ -192,7 +249,6 @@ class GameClient:
                 bomber_data.get("safe_time", 0)
             ))
         
-        # Враги
         self.enemies = []
         for enemy_data in data.get("enemies", []):
             pos = Position(enemy_data["pos"][0], enemy_data["pos"][1])
@@ -202,7 +258,6 @@ class GameClient:
                 enemy_data.get("safe_time", 0)
             ))
         
-        # Мобы
         self.mobs = []
         for mob_data in data.get("mobs", []):
             pos = Position(mob_data["pos"][0], mob_data["pos"][1])
@@ -212,507 +267,361 @@ class GameClient:
                 mob_data["type"],
                 mob_data.get("safe_time", 0)
             ))
-    
+
     def is_valid_position(self, pos: Position) -> bool:
-        """Проверить, валидна ли позиция"""
-        if not self.map_size:
+        """Проверить, находится ли позиция в пределах карты и не является ли стеной"""
+        if not self.map_size: return False
+        if not (0 <= pos.x < self.map_size[0] and 0 <= pos.y < self.map_size[1]):
             return False
-        
-        if pos.x < 0 or pos.y < 0 or pos.x >= self.map_size[0] or pos.y >= self.map_size[1]:
-            return False
-        
-        # Проверка стен
         if pos in self.walls:
             return False
-        
-        # Проверка препятствий (если нет акробатики уровня 2+)
+        # Препятствия блокируют движение, если нет акробатики
         if self.acrobatics_level < 2 and pos in self.obstacles:
             return False
-        
         return True
-    
-    def is_safe_position(self, pos: Position, time_ahead: float = 0) -> bool:
-        """Проверить, безопасна ли позиция (нет бомб, которые взорвутся)"""
+
+    def get_blast_danger(self, pos: Position, time_offset: float = 0.0) -> float:
+        """
+        Оценить опасность взрыва в данной точке.
+        Возвращает время до взрыва (0 если прямо сейчас), или float('inf') если безопасно.
+        """
+        min_timer = float('inf')
+        is_in_danger = False
+        
         for bomb in self.bombs:
-            # Время до взрыва
-            explosion_time = bomb.timer - time_ahead
+            # Если бомба взорвется слишком поздно - игнорируем пока
+            if bomb.timer > 10.0: continue
             
-            # Если бомба уже взорвалась или взорвется слишком поздно
-            if explosion_time <= 0 or explosion_time > 10:
-                continue
+            # Проверяем попадание в радиус
+            in_range = False
+            if pos.y == bomb.pos.y and abs(pos.x - bomb.pos.x) <= bomb.range:
+                # Проверка стен между бомбой и целью
+                blocked = False
+                step = 1 if pos.x > bomb.pos.x else -1
+                for x in range(bomb.pos.x + step, pos.x + step, step): # range исключает конец, но нам надо проверить саму точку? Нет, луч
+                    # Проверяем только промежуточные стены
+                    if x == pos.x: break
+                    if Position(x, pos.y) in self.walls:
+                        blocked = True
+                        break
+                    # Препятствия тоже блокируют взрыв
+                    if Position(x, pos.y) in self.obstacles:
+                        blocked = True
+                        break
+                if not blocked: in_range = True
+                
+            elif pos.x == bomb.pos.x and abs(pos.y - bomb.pos.y) <= bomb.range:
+                blocked = False
+                step = 1 if pos.y > bomb.pos.y else -1
+                for y in range(bomb.pos.y + step, pos.y + step, step):
+                    if y == pos.y: break
+                    if Position(pos.x, y) in self.walls:
+                        blocked = True
+                        break
+                    if Position(pos.x, y) in self.obstacles:
+                        blocked = True
+                        break
+                if not blocked: in_range = True
             
-            # Проверка попадания в радиус взрыва (взрыв в виде креста)
-            # Горизонтальный луч
-            if pos.y == bomb.pos.y:
-                if abs(pos.x - bomb.pos.x) <= bomb.range:
-                    return False
-            # Вертикальный луч
-            if pos.x == bomb.pos.x:
-                if abs(pos.y - bomb.pos.y) <= bomb.range:
-                    return False
+            if in_range:
+                # Время до взрыва с учетом time_offset
+                time_to_explosion = bomb.timer - time_offset
+                if time_to_explosion <= 0:
+                    # УЖЕ взрывается или взорвалась
+                    return 0.0
+                if time_to_explosion < min_timer:
+                    min_timer = time_to_explosion
+                    is_in_danger = True
+                    
+        return min_timer if is_in_danger else float('inf')
+
+    def find_path(self, start: Position, target: Position, max_steps: int = 20) -> Optional[List[Position]]:
+        """A* поиск пути с учетом опасности"""
+        if start == target: return [target]
         
-        # Проверка на мобов (опасны при контакте)
-        for mob in self.mobs:
-            if mob.safe_time == 0 and mob.pos == pos:
-                return False
+        # Heuristic
+        def h(p): return abs(p.x - target.x) + abs(p.y - target.y)
         
-        return True
-    
-    def estimate_path_time(self, path: List[Position], speed: int = 2) -> float:
-        """Оценить время прохождения пути в секундах"""
-        if not path:
-            return 0
-        # Скорость в клетках в секунду
-        return len(path) / speed
-    
-    def find_path(self, start: Position, target: Position, max_steps: int = 30) -> Optional[List[Position]]:
-        """Найти путь от start до target (A* алгоритм)"""
-        if start == target:
-            return [target]
+        open_set = [(h(start), 0, start, [start])] # f_score, g_score, current, path
+        visited = {start: 0} # pos -> g_score
         
-        open_set = {start}
-        came_from = {}
-        g_score = {start: 0}
-        f_score = {start: start.manhattan_distance(target)}
+        start_time = time.time()
         
         while open_set:
-            current = min(open_set, key=lambda p: f_score.get(p, float('inf')))
+            if time.time() - start_time > 0.1: # Timeout
+                break
+                
+            f, g, current, path = heapq.heappop(open_set)
+            
+            if len(path) > max_steps: continue
             
             if current == target:
-                # Восстановить путь
-                path = []
-                while current in came_from:
-                    path.append(current)
-                    current = came_from[current]
-                path.append(start)
-                return list(reversed(path))[:max_steps]
+                return path
             
-            open_set.remove(current)
-            
-            # Проверить соседние клетки
+            # Neighbors
             for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
                 neighbor = Position(current.x + dx, current.y + dy)
                 
-                if not self.is_valid_position(neighbor):
-                    continue
+                if not self.is_valid_position(neighbor): continue
                 
-                # Проверка бомб (если нет акробатики уровня 1+)
-                if self.acrobatics_level < 1:
-                    if any(bomb.pos == neighbor for bomb in self.bombs):
-                        continue
+                # Check danger
+                # Предполагаем скорость 2-3 клетки/сек. Время прибытия ~ g * 0.3
+                arrival_time = (g + 1) * 0.3 
+                danger_timer = self.get_blast_danger(neighbor, time_offset=0) # Check absolute danger time
                 
-                tentative_g = g_score[current] + 1
+                # Если бомба взрывается в момент прибытия или пока мы там
+                # Опасно если: timer < arrival_time + stay_time (скажем 0.5с)
+                # И timer > arrival_time (еще не взорвалась до прихода)
                 
-                if neighbor not in g_score or tentative_g < g_score[neighbor]:
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g
-                    f_score[neighbor] = tentative_g + neighbor.manhattan_distance(target)
-                    if neighbor not in open_set:
-                        open_set.add(neighbor)
-        
+                cost = 1
+                
+                if danger_timer < float('inf'):
+                    # Если взрывается очень скоро (пока мы идем или стоим)
+                    if danger_timer < arrival_time + 1.0: 
+                         # Если она взорвется ДО нашего прихода - это ок (уже чисто), НО
+                         # взрыв длится какое-то время? Считаем мгновенным.
+                         # Но лучше не рисковать ходить в зоны, где таймер < 1-2 сек
+                         if danger_timer > arrival_time:
+                             cost += 1000 # ОЧЕНЬ ОПАСНО, избегаем
+                         else:
+                             # Взрывается до нас. Ок, но может быть остаточный эффект?
+                             # Считаем безопасно, если таймер < arrival_time - 0.5
+                             pass
+                
+                # Избегаем мобов
+                for mob in self.mobs:
+                    if mob.pos == neighbor:
+                        cost += 500 # Контакт с мобом
+                    elif mob.pos.manhattan_distance(neighbor) <= 2:
+                        cost += 5 # Рядом с мобом опасно
+                
+                # Избегаем клеток с бомбами (нельзя наступить, если нет акробатики)
+                bomb_at_pos = any(b.pos == neighbor for b in self.bombs)
+                if bomb_at_pos and self.acrobatics_level < 1:
+                    continue # Нельзя пройти
+                
+                new_g = g + cost
+                
+                if neighbor not in visited or new_g < visited[neighbor]:
+                    visited[neighbor] = new_g
+                    new_path = path + [neighbor]
+                    heapq.heappush(open_set, (new_g + h(neighbor), new_g, neighbor, new_path))
+                    
         return None
-    
-    def count_obstacles_in_range(self, bomb_pos: Position, bomb_range: int = None) -> int:
-        """Подсчитать количество препятствий в радиусе взрыва бомбы"""
-        if bomb_range is None:
-            bomb_range = self.bomb_range
+
+    def get_best_target(self, bomber: Bomber) -> Optional[Position]:
+        """Выбор лучшей цели для атаки"""
+        possible_targets = []
         
-        count = 0
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+        # 1. Используем анализ карты для поиска кластеров
+        if self.use_local_api and self.api:
+            analysis = self.api.get_map_analysis(force_update=False)
+            if analysis and analysis.high_value_targets:
+                for pos_tuple, val in analysis.high_value_targets[:5]:
+                    pos = Position(pos_tuple[0], pos_tuple[1])
+                    if bomber.pos.distance(pos) < 20: # Не слишком далеко
+                        possible_targets.append((pos, val * 10)) # Приоритет от кол-ва коробок
         
-        for dx, dy in directions:
-            for r in range(1, bomb_range + 1):
-                check_pos = Position(bomb_pos.x + dx * r, bomb_pos.y + dy * r)
-                if check_pos in self.obstacles:
-                    count += 1
-                    break  # Луч взрыва останавливается на препятствии
-                elif check_pos in self.walls:
-                    break  # Луч останавливается на стене
-        
-        return count
-    
-    def find_mob_target(self, bomber: Bomber) -> Optional[Position]:
-        """Найти ближайшего моба для атаки (10 очков за моба)"""
-        if not bomber.alive or not bomber.can_move:
+        # 2. Ближайшие препятствия
+        if not possible_targets and self.obstacles:
+             # Берем случайные 10 препятствий чтобы не перебирать все
+            sample_obstacles = random.sample(list(self.obstacles), min(10, len(self.obstacles)))
+            for obs in sample_obstacles:
+                possible_targets.append((obs, 5))
+                
+        # 3. Враги
+        for enemy in self.enemies:
+            possible_targets.append((enemy.pos, 15)) # Убийство важно
+            
+        if not possible_targets:
             return None
-        
-        # Ищем ближайшего моба, который не спит
-        active_mobs = [mob for mob in self.mobs if mob.safe_time == 0]
-        if not active_mobs:
-            return None
-        
-        nearest_mob = min(active_mobs, key=lambda m: bomber.pos.manhattan_distance(m.pos))
-        
-        # Проверяем, можем ли мы безопасно подойти
-        # Мобы опасны при контакте, но можно взорвать бомбой
-        # Ищем позицию рядом с мобом для размещения бомбы
-        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-            bomb_pos = Position(nearest_mob.pos.x + dx, nearest_mob.pos.y + dy)
-            if self.is_valid_position(bomb_pos) and self.is_safe_position(bomb_pos, time_ahead=8.0):
-                path = self.find_path(bomber.pos, bomb_pos, max_steps=30)
-                if path:
-                    return bomb_pos
-        
-        return None
-    
-    def find_enemy_target(self, bomber: Bomber) -> Optional[Position]:
-        """Найти ближайшего врага для атаки (10 очков за убийство)"""
-        if not bomber.alive or not bomber.can_move:
-            return None
-        
-        if not self.enemies:
-            return None
-        
-        # Ищем ближайшего врага
-        nearest_enemy = min(self.enemies, key=lambda e: bomber.pos.manhattan_distance(e.pos))
-        
-        # Пытаемся предсказать, где будет враг, и поставить бомбу
-        # Для простоты ставим бомбу рядом с текущей позицией врага
-        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-            bomb_pos = Position(nearest_enemy.pos.x + dx, nearest_enemy.pos.y + dy)
-            if self.is_valid_position(bomb_pos) and self.is_safe_position(bomb_pos, time_ahead=8.0):
-                path = self.find_path(bomber.pos, bomb_pos, max_steps=30)
-                if path and bomber.pos.manhattan_distance(bomb_pos) <= 15:  # Не слишком далеко
-                    return bomb_pos
-        
-        return None
-    
-    def find_best_obstacle_target(self, bomber: Bomber) -> Optional[Tuple[Position, Position]]:
-        """Найти лучшую цель для уничтожения препятствий
-        Возвращает (позиция для бомбы, позиция цели)"""
-        if not bomber.alive or not bomber.can_move:
-            return None
-        
-        best_bomb_pos = None
+            
+        # Выбор лучшей цели с учетом расстояния
         best_target = None
-        best_score = 0
-        bomb_range = 1  # Базовый радиус, можно получить из состояния
+        best_score = -float('inf')
         
-        # Ищем позиции для размещения бомб рядом с препятствиями
-        checked_bomb_positions = set()
-        
-        for obstacle in self.obstacles:
-            # Проверяем все позиции рядом с препятствием, где можно поставить бомбу
-            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-                bomb_pos = Position(obstacle.x + dx, obstacle.y + dy)
-                
-                # Пропускаем если уже проверяли
-                if bomb_pos in checked_bomb_positions:
-                    continue
-                checked_bomb_positions.add(bomb_pos)
-                
-                # Проверяем валидность позиции для бомбы
-                if not self.is_valid_position(bomb_pos):
-                    continue
-                
-                # Проверяем безопасность (нет других бомб, которые взорвутся)
-                if not self.is_safe_position(bomb_pos, time_ahead=8.0):
-                    continue
-                
-                # Подсчитываем количество препятствий в радиусе
-                destroyed = self.count_obstacles_in_range(bomb_pos, self.bomb_range)
-                
-                if destroyed == 0:
-                    continue
-                
-                # Очки: 1 + 2 + 3 + 4 = 10 максимум за 4+ препятствия
-                score = sum(range(1, min(destroyed + 1, 5)))
-                
-                # Бонус за близость к юниту
-                distance = bomber.pos.manhattan_distance(bomb_pos)
-                score = score * (1.0 - distance * 0.01)  # Небольшой бонус за близость
-                
-                if score > best_score:
-                    best_score = score
-                    best_bomb_pos = bomb_pos
-                    best_target = obstacle
-        
-        if best_bomb_pos and best_target:
-            return (best_bomb_pos, best_target)
-        return None
-    
-    def plan_bomb_placement(self, bomber: Bomber, bomb_pos: Position, target: Position) -> Tuple[List[Position], List[Position]]:
-        """Спланировать путь и размещение бомб"""
-        if not bomb_pos:
-            return [], []
-        
-        # Находим путь к позиции бомбы
-        path = self.find_path(bomber.pos, bomb_pos, max_steps=30)
-        if not path:
-            return [], []
-        
-        # Размещаем бомбу на целевой позиции
-        bomb_positions = [bomb_pos] if bomber.bombs_available > 0 else []
-        
-        return path, bomb_positions
-    
-    def should_buy_booster(self) -> Optional[int]:
-        """Определить, какое улучшение купить"""
-        try:
-            boosters_data = self.get_boosters()
-            available = boosters_data.get("available", [])
-            state = boosters_data.get("state", {})
-            points = state.get("points", 0)
+        for target_pos, base_score in possible_targets:
+            dist = bomber.pos.manhattan_distance(target_pos)
+            if dist == 0: continue
             
-            if points < 1:
-                return None
+            score = base_score - (dist * 0.5)
             
-            # Обновляем текущие уровни из состояния
-            self.speed_level = state.get("speed", 2) - 2  # Базовая скорость 2
-            self.bomb_range = state.get("bomb_range", 1)
-            self.bomb_delay = state.get("bomb_delay", 8000)
-            self.bomb_delay_level = (8000 - self.bomb_delay) // 2000  # Базовый таймер 8 сек
-            self.acrobatics_level = 0
-            if state.get("can_pass_bombs", False):
-                self.acrobatics_level = 1
-            if state.get("can_pass_obstacles", False):
-                self.acrobatics_level = 2
-            if state.get("can_pass_walls", False):
-                self.acrobatics_level = 3
-            
-            # Приоритет улучшений (оптимизированная стратегия):
-            # 1. Радиус бомбы - КРИТИЧНО для максимизации очков (больше препятствий за взрыв)
-            for booster in available:
-                if booster.get("type") == "bomb_range" and booster.get("cost", 0) <= points:
-                    return BoosterType.BOMB_RANGE
-            
-            # 2. Скорость (до 3 уровня) - для быстрого перемещения и избегания опасностей
-            if self.speed_level < 3:
-                for booster in available:
-                    if booster.get("type") == "speed" and booster.get("cost", 0) <= points:
-                        return BoosterType.SPEED
-            
-            # 3. Количество бомб - для большего урона и эффективности
-            for booster in available:
-                if booster.get("type") == "pockets" and booster.get("cost", 0) <= points:
-                    return BoosterType.POCKETS
-            
-            # 4. Акробатика (уровень 1) - для прохода через бомбы (важно для безопасности)
-            if self.acrobatics_level < 1 and points >= 2:
-                for booster in available:
-                    if booster.get("type") == "acrobatics" and booster.get("cost", 0) <= points:
-                        return BoosterType.ACROBATICS
-            
-            # 5. Зрение - для лучшей видимости и планирования
-            for booster in available:
-                if booster.get("type") == "vision" and booster.get("cost", 0) <= points:
-                    return BoosterType.VISION
-            
-            # 6. Фитиль бомбы (до 3 уровня) - для быстрых взрывов
-            if self.bomb_delay_level < 3:
-                for booster in available:
-                    if booster.get("type") == "bomb_delay" and booster.get("cost", 0) <= points:
-                        return BoosterType.BOMB_DELAY
-            
-            # 7. Броня - для защиты от случайных взрывов
-            for booster in available:
-                if booster.get("type") == "armor" and booster.get("cost", 0) <= points:
-                    return BoosterType.ARMOR
-            
-            return None
-        except Exception as e:
-            print(f"Ошибка при проверке улучшений: {e}")
-            return None
-    
-    def find_safe_escape_path(self, bomber: Bomber) -> Optional[List[Position]]:
-        """Найти безопасный путь для отступления от бомб"""
-        # Получаем текущую скорость
-        speed = 2 + self.speed_level
-        
-        # Ищем позиции, которые будут безопасны
-        safe_positions = []
-        
-        # Ищем в радиусе обзора (обычно 5, но может быть больше с улучшениями)
-        search_radius = 10
-        
-        for x in range(max(0, bomber.pos.x - search_radius), min(self.map_size[0], bomber.pos.x + search_radius + 1)):
-            for y in range(max(0, bomber.pos.y - search_radius), min(self.map_size[1], bomber.pos.y + search_radius + 1)):
-                pos = Position(x, y)
-                if not self.is_valid_position(pos):
-                    continue
+            if score > best_score:
+                best_score = score
+                best_target = target_pos
                 
-                # Проверяем путь к этой позиции
-                path = self.find_path(bomber.pos, pos, max_steps=30)
-                if not path:
-                    continue
-                
-                # Оцениваем время до достижения позиции
-                path_time = self.estimate_path_time(path, speed)
-                
-                # Проверяем безопасность с учетом времени движения
-                if self.is_safe_position(pos, time_ahead=path_time + 8.0):
-                    safe_positions.append((pos, len(path)))
-        
-        if not safe_positions:
-            return None
-        
-        # Выбираем ближайшую безопасную позицию
-        nearest_safe, _ = min(safe_positions, key=lambda item: item[1])
-        return self.find_path(bomber.pos, nearest_safe, max_steps=30)
-    
+        return best_target
+
     def make_move(self) -> Dict:
-        """Принять решение о движении"""
+        """Основная логика хода"""
         commands = []
         
         for bomber in self.bombers:
-            if not bomber.alive or not bomber.can_move:
-                continue
+            if not bomber.alive or not bomber.can_move: continue
             
-            # Проверяем безопасность текущей позиции
-            if not self.is_safe_position(bomber.pos, time_ahead=8.0):
-                # Нужно убегать!
-                escape_path = self.find_safe_escape_path(bomber)
-                if escape_path:
-                    command = {
-                        "id": bomber.id,
-                        "path": [[p.x, p.y] for p in escape_path],
-                        "bombs": []
-                    }
-                    commands.append(command)
+            my_commands = {"id": bomber.id, "path": [], "bombs": []}
+            
+            # 1. ПРОВЕРКА БЕЗОПАСНОСТИ (ESCAPE)
+            danger_timer = self.get_blast_danger(bomber.pos)
+            if danger_timer < 1.5: # Если взрыв через < 1.5 сек
+                # СРОЧНО БЕЖАТЬ
+                best_escape = None
+                max_timer = -1
+                
+                # Проверяем соседей
+                for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    esc_pos = Position(bomber.pos.x + dx, bomber.pos.y + dy)
+                    if self.is_valid_position(esc_pos):
+                        # Может там тоже бомба?
+                        t = self.get_blast_danger(esc_pos)
+                        if t > max_timer:
+                            max_timer = t
+                            best_escape = esc_pos
+                
+                if best_escape and max_timer > danger_timer:
+                    my_commands["path"] = [[bomber.pos.x, bomber.pos.y], [best_escape.x, best_escape.y]]
+                    commands.append(my_commands)
                     continue
             
-            # Стратегия приоритетов:
-            # 1. Препятствия (основной источник очков, особенно группы)
-            target_result = self.find_best_obstacle_target(bomber)
+            # 2. АТАКА / ДВИЖЕНИЕ К ЦЕЛИ
+            target = self.get_best_target(bomber)
             
-            if target_result:
-                bomb_pos, target = target_result
-                path, bomb_positions = self.plan_bomb_placement(bomber, bomb_pos, target)
-                if path:
-                    command = {
-                        "id": bomber.id,
-                        "path": [[p.x, p.y] for p in path],
-                        "bombs": [[p.x, p.y] for p in bomb_positions if bomber.bombs_available > 0]
-                    }
-                    commands.append(command)
+            if target:
+                # Пытаемся подойти к цели
+                # Если цель - препятствие, надо встать РЯДОМ
+                target_is_obstacle = target in self.obstacles
+                
+                move_target = target
+                if target_is_obstacle:
+                    # Ищем соседнюю клетку
+                    min_dist = float('inf')
+                    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        p = Position(target.x + dx, target.y + dy)
+                        if self.is_valid_position(p):
+                            d = bomber.pos.manhattan_distance(p)
+                            if d < min_dist:
+                                min_dist = d
+                                move_target = p
+                
+                path = self.find_path(bomber.pos, move_target)
+                if path and len(path) > 1:
+                    # Ограничиваем длину пути
+                    path = path[:10]
+                    my_commands["path"] = [[p.x, p.y] for p in path]
+                    
+                    # Если мы пришли на позицию стрельбы (или близко)
+                    if len(path) <= 2 and bomber.bombs_available > 0:
+                        # Проверяем, стоит ли ставить бомбу
+                        # Если рядом есть препятствия или враги
+                        nearby_targets = 0
+                        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                             check = Position(path[-1].x + dx, path[-1].y + dy) # Проверяем вокруг точки назначения
+                             if check in self.obstacles: nearby_targets += 1
+                        
+                        if nearby_targets > 0:
+                             # Ставим бомбу в конце пути
+                             # ВАЖНО: проверить, сможем ли убежать!
+                             # Симуляция: если поставим бомбу тут, будет ли escape?
+                             my_commands["bombs"] = [[path[-1].x, path[-1].y]]
+                    
+                    commands.append(my_commands)
                     continue
             
-            # 2. Мобы (10 очков, но опасны)
-            mob_bomb_pos = self.find_mob_target(bomber)
-            if mob_bomb_pos:
-                path = self.find_path(bomber.pos, mob_bomb_pos, max_steps=30)
-                if path:
-                    bombs = [[mob_bomb_pos.x, mob_bomb_pos.y]] if bomber.bombs_available > 0 else []
-                    command = {
-                        "id": bomber.id,
-                        "path": [[p.x, p.y] for p in path],
-                        "bombs": bombs
-                    }
-                    commands.append(command)
-                    continue
-            
-            # 3. Враги (10 очков, но сложнее попасть)
-            enemy_bomb_pos = self.find_enemy_target(bomber)
-            if enemy_bomb_pos:
-                path = self.find_path(bomber.pos, enemy_bomb_pos, max_steps=30)
-                if path:
-                    bombs = [[enemy_bomb_pos.x, enemy_bomb_pos.y]] if bomber.bombs_available > 0 else []
-                    command = {
-                        "id": bomber.id,
-                        "path": [[p.x, p.y] for p in path],
-                        "bombs": bombs
-                    }
-                    commands.append(command)
-                    continue
-            
-            # 4. Если нет целей, двигаемся к ближайшему препятствию
-            if self.obstacles:
-                nearest = min(self.obstacles, key=lambda o: bomber.pos.manhattan_distance(o))
-                path = self.find_path(bomber.pos, nearest, max_steps=30)
-                if path:
-                    command = {
-                        "id": bomber.id,
-                        "path": [[p.x, p.y] for p in path],
-                        "bombs": []
-                    }
-                    commands.append(command)
+            # 3. RANDOM ROAM (чтобы не стоять)
+            if not my_commands["path"]:
+                valid_moves = []
+                for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    p = Position(bomber.pos.x + dx, bomber.pos.y + dy)
+                    if self.is_valid_position(p) and self.get_blast_danger(p) > 2.0:
+                         valid_moves.append(p)
+                
+                if valid_moves:
+                    chosen = random.choice(valid_moves)
+                    my_commands["path"] = [[bomber.pos.x, bomber.pos.y], [chosen.x, chosen.y]]
+                    commands.append(my_commands)
+
+        return self.move_bombers(commands)
+
+    def should_buy_booster(self) -> Optional[int]:
+        """Логика покупки бустеров"""
+        if time.time() < self.booster_check_skip_until: return None
         
-        if commands:
-            return self.move_bombers(commands)
-        return {}
-    
+        try:
+            data = self.get_boosters()
+            if not data: return None # Handle empty response/error
+            state = data.get("state", {})
+            points = state.get("points", 0)
+            
+            if points < 1: return None
+            
+            # Обновляем статы
+            self.bomb_range = state.get("bomb_range", 1)
+            self.speed_level = state.get("speed", 2) - 2
+            
+            available = data.get("available", [])
+            
+            # Приоритеты: Range > Speed > Bombs
+            for b in available:
+                if b['type'] == 'bomb_range' and b['cost'] <= points: return BoosterType.BOMB_RANGE
+            if self.speed_level < 3:
+                for b in available:
+                    if b['type'] == 'speed' and b['cost'] <= points: return BoosterType.SPEED
+            for b in available:
+                if b['type'] == 'pockets' and b['cost'] <= points: return BoosterType.POCKETS
+                
+            return None
+            
+        except Exception:
+            self.booster_check_skip_until = time.time() + 10
+            return None
+
     def run(self, verbose: bool = False):
-        """Основной игровой цикл"""
-        print("Запуск клиента игры...")
-        print("Нажмите Ctrl+C для остановки")
-        
-        last_booster_check = 0
+        """Главный цикл"""
+        print("Запуск клиента...")
         iteration = 0
+        last_booster_check = 0
         
         while True:
             try:
                 iteration += 1
-                
-                # Обновляем состояние
                 self.update_state()
                 
-                if verbose and iteration % 20 == 0:
-                    alive_count = sum(1 for b in self.bombers if b.alive)
-                    obstacles_count = len(self.obstacles)
-                    bombs_count = len(self.bombs)
-                    print(f"[Итерация {iteration}] Живых юнитов: {alive_count}, "
-                          f"Препятствий: {obstacles_count}, Бомб: {bombs_count}")
-                
-                # Покупаем улучшения (не слишком часто)
-                current_time = time.time()
-                if current_time - last_booster_check >= 3.0:  # Проверяем каждые 3 секунды
-                    last_booster_check = current_time
-                    booster_type = self.should_buy_booster()
-                    if booster_type is not None:
-                        try:
-                            self.buy_booster(booster_type)
-                            booster_names = {
-                                BoosterType.POCKETS: "Карманы",
-                                BoosterType.BOMB_RANGE: "Радиус бомбы",
-                                BoosterType.SPEED: "Скорость",
-                                BoosterType.VISION: "Зрение",
-                                BoosterType.UNITS: "Юниты",
-                                BoosterType.ARMOR: "Броня",
-                                BoosterType.BOMB_DELAY: "Фитиль",
-                                BoosterType.ACROBATICS: "Акробатика"
-                            }
-                            print(f"✓ Куплено улучшение: {booster_names.get(booster_type, booster_type)}")
-                        except Exception as e:
-                            if verbose:
-                                print(f"Ошибка при покупке улучшения: {e}")
-                
-                # Делаем ход
+                # Покупка бустеров раз в 5 сек
+                if time.time() - last_booster_check > 5:
+                    last_booster_check = time.time()
+                    booster = self.should_buy_booster()
+                    if booster: 
+                        self.buy_booster(booster)
+                        if verbose: print(f"Куплен бустер: {booster}")
+
                 result = self.make_move()
-                if result.get("errors"):
-                    if verbose:
-                        print(f"Ошибки движения: {result['errors']}")
-                
-                # Небольшая задержка перед следующим циклом
-                time.sleep(0.05)  # 50мс - частота дискретизации игры
+                if verbose and iteration % 10 == 0:
+                    print(f"Iter {iteration}: Active bombers {len([b for b in self.bombers if b.alive])}")
+                    if result.get('errors'): print("Errors:", result['errors'])
+
+                time.sleep(0.5) # Не частить
                 
             except KeyboardInterrupt:
-                print("\nОстановка клиента...")
                 break
-            except requests.exceptions.RequestException as e:
-                print(f"Ошибка сети: {e}")
-                time.sleep(0.5)
             except Exception as e:
-                print(f"Неожиданная ошибка: {e}")
-                if verbose:
-                    import traceback
-                    traceback.print_exc()
-                time.sleep(0.1)
-
+                print(f"Error: {e}")
+                time.sleep(1)
 
 if __name__ == "__main__":
     import sys
+    import os
+    from dotenv import load_dotenv
     
-    if len(sys.argv) < 2:
-        print("Использование: python game_client.py <API_KEY> [BASE_URL] [--verbose]")
-        print("Пример: python game_client.py your_api_key")
-        print("Или для тестового сервера: python game_client.py your_api_key https://games-test.datsteam.dev")
-        print("Для подробного вывода: python game_client.py your_api_key https://games-test.datsteam.dev --verbose")
+    load_dotenv()
+    api_key = os.getenv("API_KEY")
+    base_url = os.getenv("BASE_URL", "https://games.datsteam.dev")
+    
+    use_local_api = False
+    if "--local" in sys.argv: use_local_api = True
+    
+    if not api_key:
+        print("API_KEY required")
         sys.exit(1)
-    
-    api_key = sys.argv[1]
-    base_url = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith("--") else "https://games.datsteam.dev"
-    verbose = "--verbose" in sys.argv or "-v" in sys.argv
-    
-    client = GameClient(api_key, base_url)
-    client.run(verbose=verbose)
-
+        
+    client = GameClient(api_key, base_url, use_local_api=use_local_api)
+    client.run(verbose=True)

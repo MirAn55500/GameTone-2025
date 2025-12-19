@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Визуализатор</title>
+  <style>
+    body {
+      background: #1e1e2e;
+      color: #cdd6f4;
+      font-family: monospace;
+      margin: 0;
+      padding: 16px;
+    }
+    #info {
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+    #arena {
+      display: grid;
+      gap: 1px;
+      background: #313244;
+      width: fit-content;
+      padding: 4px;
+      border: 2px solid #89b4fa;
+    }
+    .cell {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: bold;
+      color: white;
+    }
+    .wall { background: #6c7086; }                /* непроходимые стены */
+    .obstacle { background: #f38ba8; }            /* разрушаемые */
+    .bomb { background: #fab387; }                /* бомбы */
+    .bomber { background: #89b4fa; }              /* юниты */
+    .enemy { background: #f38ba8; }               /* враги — розовые */
+    .mob-ghost { background: #cba6f7; }           /* призраки */
+    .mob-patrol { background: #f9e2af; }          /* патрульные */
+    .empty { background: #181825; }               /* пусто */
+    .safe { box-shadow: 0 0 6px #a6e3a1; }        /* неуязвимость */
+  </style>
+</head>
+<body>
+  <div id="info">Загрузка...</div>
+  <div id="arena"></div>
+
+  <script>
+    const API_URL = 'сайт';
+    const TOKEN = 'токен';
+
+    let mapSize = [30, 30]; // fallback
+    let grid = [];
+
+    function resetGrid() {
+      const [w, h] = mapSize;
+      grid = Array(h).fill().map(() => Array(w).fill(null));
+    }
+
+    function place(x, y, obj) {
+      if (x >= 0 && y >= 0 && y < grid.length && x < grid[0].length) {
+        grid[y][x] = obj;
+      }
+    }
+
+    async function fetchArena() {
+      try {
+        const res = await fetch(API_URL, {
+          headers: { 'X-Auth-Token': TOKEN }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        // Обновляем размер карты
+        if (data.map_size) {
+          mapSize = data.map_size;
+        }
+        resetGrid();
+
+        // Стены — непроходимые
+        if (data.arena?.walls) {
+          data.arena.walls.forEach(([x, y]) => place(x, y, { type: 'wall' }));
+        }
+
+        // Препятствия — разрушаемые
+        if (data.arena?.obstacles) {
+          data.arena.obstacles.forEach(([x, y]) => place(x, y, { type: 'obstacle' }));
+        }
+
+        // Бомбы
+        if (data.arena?.bombs) {
+          data.arena.bombs.forEach(bomb => {
+            place(bomb.pos[0], bomb.pos[1], {
+              type: 'bomb',
+              timer: bomb.timer
+            });
+          });
+        }
+
+        // Мои юниты
+        if (data.bombers) {
+          data.bombers.forEach(b => {
+            if (b.alive) {
+              place(b.pos[0], b.pos[1], {
+                type: 'bomber',
+                safe: b.safe_time > 0
+              });
+            }
+          });
+        }
+
+        // Враги
+        if (data.enemies) {
+          data.enemies.forEach(e => {
+            place(e.pos[0], e.pos[1], {
+              type: 'enemy',
+              safe: e.safe_time > 0
+            });
+          });
+        }
+
+        // Мобы
+        if (data.mobs) {
+          data.mobs.forEach(m => {
+            place(m.pos[0], m.pos[1], {
+              type: m.type === 'ghost' ? 'mob-ghost' : 'mob-patrol',
+              safe: m.safe_time > 0
+            });
+          });
+        }
+
+        render();
+        updateInfo(data);
+      } catch (err) {
+        document.getElementById('info').textContent = `Ошибка: ${err.message}`;
+      }
+    }
+
+    function render() {
+      const arenaEl = document.getElementById('arena');
+      const [w, h] = mapSize;
+      arenaEl.style.gridTemplateColumns = `repeat(${w}, 24px)`;
+      let html = '';
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const cell = grid[y]?.[x] || { type: 'empty' };
+          const cls = cell.type + (cell.safe ? ' safe' : '');
+          let content = '';
+          if (cell.type === 'bomb') {
+            content = Math.ceil(cell.timer);
+          }
+          html += `<div class="cell ${cls}">${content}</div>`;
+        }
+      }
+      arenaEl.innerHTML = html;
+    }
+
+    function updateInfo(data) {
+      const info = document.getElementById('info');
+      info.innerHTML = `
+        Игрок: <b>${data.player || '—'}</b> | 
+        Счёт: <b>${data.raw_score || 0}</b> | 
+        Раунд: <b>${data.round || '—'}</b>
+      `;
+    }
+
+    // Запуск
+    fetchArena();
+    setInterval(fetchArena, 350); // ~2.85 запросов/сек
+  </script>
+</body>
+</html>
