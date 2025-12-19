@@ -14,11 +14,13 @@ app = Flask(__name__)
 CORS(app)  # Разрешаем CORS для визуализатора
 
 # Инициализируем API
+# Сначала пробуем загрузить из .env
+load_dotenv(".env")
 api_key = os.getenv("API_KEY")
 base_url = os.getenv("BASE_URL", "https://games-test.datsteam.dev")
 
 if not api_key:
-    print("⚠️  API_KEY не найден в .env файле!")
+    print("[WARNING] API_KEY не найден в .env!")
     print("Создайте файл .env и добавьте: API_KEY=your_api_key_here")
     exit(1)
 
@@ -151,25 +153,32 @@ def run_game_client():
     def client_thread():
         time.sleep(2)  # Ждем запуска сервера
         try:
+            print(f"[CLIENT] API_KEY: {api_key[:10]}...")  # Показываем начало ключа для проверки
+            print(f"[CLIENT] BASE_URL: {base_url}")
             from game_client import GameClient
-            print("🎮 Запуск игрового клиента...")
+            print("[CLIENT] Импорт GameClient успешный")
             client = GameClient(api_key, base_url, use_local_api=True)
+            print("[CLIENT] GameClient создан успешно")
+            print("[CLIENT] Запуск игрового клиента...")
             client.run(verbose=True)
         except KeyboardInterrupt:
+            print("[CLIENT] Получен сигнал остановки")
             pass
         except Exception as e:
-            print(f"❌ Ошибка клиента: {e}")
+            print(f"[ERROR] Ошибка клиента: {e}")
+            import traceback
+            traceback.print_exc()
     
     thread = threading.Thread(target=client_thread, daemon=True)
     thread.start()
     return thread
 
 if __name__ == '__main__':
-    print(f"🚀 Запуск веб-сервера и игрового клиента")
-    print(f"📊 Визуализатор: http://localhost:5000/")
-    print(f"🔌 API: http://localhost:5000/api/arena")
-    print(f"📈 Анализ карты: http://localhost:5000/api/map-analysis")
-    print(f"\n✅ Игровой клиент запускается автоматически...")
+    print(f"[START] Запуск веб-сервера и игрового клиента")
+    print(f"[VISUALIZER] Визуализатор: http://localhost:5000/")
+    print(f"[API] API: http://localhost:5000/api/arena")
+    print(f"[ANALYSIS] Анализ карты: http://localhost:5000/api/map-analysis")
+    print(f"\n[CLIENT] Игровой клиент запускается автоматически...")
     print(f"Нажмите Ctrl+C для остановки\n")
     
     client_thread = run_game_client()

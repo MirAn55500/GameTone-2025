@@ -46,15 +46,15 @@ class GameAPI:
         self.last_analysis_time = 0
     
     def _rate_limit(self):
-        """Ограничение скорости запросов (1 в секунду)"""
+        """Ограничение скорости запросов (3 в секунду)"""
         now = time.time()
         request_times = [t for t in self.request_times if now - t < 1.0]
-        
-        if len(request_times) >= 1:
+
+        if len(request_times) >= 3:
             sleep_time = 1.0 - (now - request_times[0])
             if sleep_time > 0:
                 time.sleep(sleep_time)
-        
+
         self.request_times.append(time.time())
     
     def _get_cached(self, key: str) -> Optional[Dict]:
@@ -99,13 +99,17 @@ class GameAPI:
             
             response.raise_for_status()
             data = response.json()
-            
+
+            # Логируем очки, если они есть в ответе arena
+            if "points" in data:
+                print(f"[SCORE] Arena points: {data['points']}")
+
             # Сохраняем в кэш
             self._set_cache(cache_key, data)
-            
+
             # Сбрасываем backoff при успехе
             self.backoff_until = 0
-            
+
             return data
         except requests.exceptions.RequestException as e:
             # При ошибке возвращаем кэш, если есть
@@ -214,43 +218,107 @@ class GameAPI:
         except Exception:
             return self.map_analysis  # Возвращаем старый анализ при ошибке
     
-    def get_boosters(self) -> Dict:
+    def get_boosters(self) -> Optional[Dict]:
         """Получить доступные улучшения"""
         cache_key = "boosters"
         cached = self._get_cached(cache_key)
         if cached:
             return cached
-        
+
         try:
             self._rate_limit()
             response = self.session.get(f"{self.base_url}/api/booster", timeout=5)
-            
+
             if response.status_code == 429:
+                print(f"[WARN] Rate limited (429) for boosters, using cache")
                 if cache_key in self.cache:
                     return self.cache[cache_key]
-                raise Exception("Too many requests")
-            
+                return None  # Не критично, просто пропускаем
+
+            if response.status_code == 400:
+                # Bad Request - игра может еще не начаться или нет доступа
+                print(f"[WARN] Bad Request (400) for boosters - game may not have started yet")
+                return None
+
+            # Проверяем другие ошибки перед raise_for_status
+            if response.status_code >= 400:
+                print(f"[WARN] HTTP {response.status_code} for boosters: {response.text}")
+                return None  # Любая ошибка клиента - не критично
+
             response.raise_for_status()
             data = response.json()
+            print(f"[BOOSTERS] Data received: {data}")
             self._set_cache(cache_key, data)
             return data
-        except requests.exceptions.RequestException as e:
+        except requests.exceptions.HTTPError as e:
+            # Тихая обработка HTTP ошибок для boosters
+            if e.response and e.response.status_code == 400:
+                print(f"[WARN] HTTP 400 error for boosters: {e.response.text}")
+                return None
+            # Для других HTTP ошибок тоже возвращаем None (не критично)
+            print(f"[WARN] HTTP error for boosters: {e}")
             if cache_key in self.cache:
                 return self.cache[cache_key]
-            raise
+            return None
+        except requests.exceptions.RequestException as e:
+            # При любой другой ошибке возвращаем None (не критично)
+            print(f"[WARN] Request error for boosters: {e}")
+            if cache_key in self.cache:
+                return self.cache[cache_key]
+            return None
+        except Exception as e:
+            # Подавляем все остальные ошибки для booster (не критично)
+            print(f"[WARN] Unexpected error for boosters: {e}")
+            if cache_key in self.cache:
+                return self.cache[cache_key]
+            return None
     
     def buy_booster(self, booster_type: int) -> Dict:
         """Купить улучшение"""
         self._rate_limit()
-        payload = {"booster": booster_type}
-        response = self.session.post(f"{self.base_url}/api/booster", json=payload, timeout=5)
-        response.raise_for_status()
-        
-        # Инвалидируем кэш улучшений
-        if "boosters" in self.cache:
-            del self.cache["boosters"]
-        
-        return response.json()
+
+        # Преобразуем числовой тип бустера в строковый тип API
+        booster_type_mapping = {
+            0: "bomb_count",      # POCKETS
+            1: "bomb_range",      # BOMB_RANGE
+            2: "speed",           # SPEED
+            3: "vision",          # VISION
+            4: "bomber_count",    # UNITS
+            5: "armor",           # ARMOR
+            6: "bomb_delay",      # BOMB_DELAY
+            7: "passability",     # ACROBATICS
+        }
+
+        api_booster_type = booster_type_mapping.get(booster_type, str(booster_type))
+        payload = {"booster": api_booster_type}
+
+        try:
+            # Сначала пробуем JSON (стандартный формат)
+            response = self.session.post(f"{self.base_url}/api/booster", json=payload, timeout=5)
+
+            if response.status_code == 400 and "invalid request format" in response.text:
+                print(f"[INFO] JSON format failed for booster {booster_type} ({api_booster_type}), trying form data")
+                # Если JSON не работает, пробуем form data
+                response = self.session.post(f"{self.base_url}/api/booster", data=payload, timeout=5)
+
+            response.raise_for_status()
+            result = response.json()
+            print(f"[SUCCESS] Bought booster {booster_type} ({api_booster_type}): {result}")
+
+            # Инвалидируем кэш улучшений
+            if "boosters" in self.cache:
+                del self.cache["boosters"]
+
+            return result
+
+        except requests.exceptions.HTTPError as e:
+            print(f"[ERROR] HTTP error buying booster {booster_type} ({api_booster_type}): {e}")
+            if e.response:
+                print(f"   Response: {e.response.text}")
+            raise
+        except Exception as e:
+            print(f"[ERROR] Unexpected error buying booster {booster_type} ({api_booster_type}): {e}")
+            raise
     
     def move_bombers(self, commands: List[Dict]) -> Dict:
         """Отправить команды движения"""
