@@ -15,6 +15,9 @@ from enum import IntEnum
 # Продвинутая логика с симуляцией цепных реакций
 from advanced_logic import MapPredictor, TargetSelector, SafePathfinder
 
+# Менеджер отряда для координации юнитов
+from squad_manager import SquadManager, UnitMove
+
 
 class BoosterType(IntEnum):
     """Типы улучшений"""
@@ -153,6 +156,9 @@ class GameClient:
         self.target_selector: Optional[TargetSelector] = None
         self.safe_pathfinder: Optional[SafePathfinder] = None
         self.use_advanced_logic = True  # Флаг для включения/выключения продвинутой логики
+        
+        # Менеджер отряда для координации юнитов
+        self.squad_manager: Optional[SquadManager] = None
     
     def _rate_limit(self):
         """Ограничение скорости запросов (3 в секунду)"""
@@ -367,6 +373,42 @@ class GameClient:
         return None
 
     def attempt_enclosure_escape(self, bomber: Bomber, my_commands: Dict, commands: List[Dict]) -> bool:
+        """
+        Попытка вырваться из запертости.
+        Включает логику отчаянного прорыва для "каши" юнитов.
+        """
+        # Проверяем, есть ли "каша" (несколько юнитов на одной клетке)
+        if self.squad_manager:
+            mates_nearby = self.squad_manager.count_mates_nearby(bomber, radius=1)
+            units_on_tile = self.squad_manager.get_units_on_tile(bomber.pos)
+            
+            if mates_nearby > 1 and bomber.bombs_available > 0:
+                # Есть "каша" - используем логику отчаянного прорыва
+                leader = self.squad_manager.get_desperate_breakthrough_leader(units_on_tile)
+                if leader and leader.id == bomber.id:
+                    # Лидер ставит бомбу для прорыва (даже если опасно для команды)
+                    print(f"[ENCLOSED] {bomber.id} DESPERATE BREAKTHROUGH - leader planting bomb at {bomber.pos} (mates={mates_nearby})")
+                    # Ищем любую escape позицию
+                    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        escape_pos = Position(bomber.pos.x + dx, bomber.pos.y + dy)
+                        if self.is_valid_position(escape_pos):
+                            my_commands["bombs"] = [[bomber.pos.x, bomber.pos.y]]
+                            my_commands["path"] = [[bomber.pos.x, bomber.pos.y], [escape_pos.x, escape_pos.y]]
+                            commands.append(my_commands)
+                            return True
+                elif mates_nearby > 1:
+                    # Не лидер - пытаемся отойти
+                    print(f"[ENCLOSED] {bomber.id} moving away from clump (not leader, mates={mates_nearby})")
+                    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        move_pos = Position(bomber.pos.x + dx, bomber.pos.y + dy)
+                        if self.is_valid_position(move_pos):
+                            danger = self.get_blast_danger(move_pos)
+                            if danger > 0.3:  # Минимальная безопасность
+                                my_commands["path"] = [[bomber.pos.x, bomber.pos.y], [move_pos.x, move_pos.y]]
+                                commands.append(my_commands)
+                                return True
+                    # Если не можем отойти, просто ждем
+                    return True
         """Пытаемся выйти из замкнутого пространства - агрессивный режим"""
         print(f"[ENCLOSED] {bomber.id} is enclosed, attempting escape...")
         
@@ -384,14 +426,18 @@ class GameClient:
                     bomb_pos, escape_path = bomb_result
                     dist_to_bomb = bomber.pos.manhattan_distance(bomb_pos)
                     if bomber.pos == bomb_pos:
-                        # Проверяем, не попадут ли другие юниты под взрыв
-                        if not self.will_bomb_hit_other_bombers(bomb_pos, bomber.id):
-                            # Бомба ставится на текущей позиции
-                            my_commands["path"] = [[p.x, p.y] for p in escape_path[:10]]
-                            my_commands["bombs"] = [[bomb_pos.x, bomb_pos.y]]
-                            commands.append(my_commands)
-                            print(f"[ENCLOSED] {bomber.id} attacking enemy with bomb at {bomb_pos} (current pos)")
-                            return True
+                            # Проверяем, не попадут ли другие юниты под взрыв
+                            if not self.will_bomb_hit_other_bombers(bomb_pos, bomber.id):
+                                # КРИТИЧНО: Проверяем, что есть escape путь
+                                if escape_path and len(escape_path) >= 2:
+                                    # Бомба ставится на текущей позиции
+                                    my_commands["path"] = [[p.x, p.y] for p in escape_path[:10]]
+                                    my_commands["bombs"] = [[bomb_pos.x, bomb_pos.y]]
+                                    commands.append(my_commands)
+                                    print(f"[ENCLOSED] {bomber.id} attacking enemy with bomb at {bomb_pos} (current pos)")
+                                    return True
+                                else:
+                                    print(f"[ENCLOSED] {bomber.id} cannot place bomb at {bomb_pos} - no escape path!")
                     else:
                         # Идем к позиции бомбы, бомба ставится на последней позиции пути
                         path_to_bomb = self.find_path(bomber.pos, bomb_pos, max_steps=4)
@@ -449,12 +495,16 @@ class GameClient:
                 if bomber.pos == bomb_pos:
                     # Проверяем, не попадут ли другие юниты под взрыв
                     if not self.will_bomb_hit_other_bombers(bomb_pos, bomber.id):
-                        # Бомба ставится на текущей позиции
-                        my_commands["path"] = [[p.x, p.y] for p in escape_path[:10]]
-                        my_commands["bombs"] = [[bomber.pos.x, bomber.pos.y]]
-                        commands.append(my_commands)
-                        print(f"[ENCLOSED] {bomber.id} placing bomb at {bomber.pos} (current) and escaping")
-                        return True
+                        # КРИТИЧНО: Проверяем, что есть escape путь
+                        if escape_path and len(escape_path) >= 2:
+                            # Бомба ставится на текущей позиции
+                            my_commands["path"] = [[p.x, p.y] for p in escape_path[:10]]
+                            my_commands["bombs"] = [[bomber.pos.x, bomber.pos.y]]
+                            commands.append(my_commands)
+                            print(f"[ENCLOSED] {bomber.id} placing bomb at {bomber.pos} (current) and escaping")
+                            return True
+                        else:
+                            print(f"[ENCLOSED] {bomber.id} cannot place bomb at {bomb_pos} - no escape path!")
                     else:
                         print(f"[ENCLOSED] {bomber.id} cannot place bomb at {bomb_pos} - would hit other bombers")
                 else:
@@ -507,12 +557,16 @@ class GameClient:
                                             if self.get_blast_danger(escape_pos) > 1.0:
                                                 # Проверяем, не попадут ли другие юниты под взрыв
                                                 if not self.will_bomb_hit_other_bombers(bomb_pos, bomber.id):
-                                                    # Бомба ставится на текущей позиции
-                                                    my_commands["path"] = [[bomber.pos.x, bomber.pos.y], [escape_pos.x, escape_pos.y]]
-                                                    my_commands["bombs"] = [[bomber.pos.x, bomber.pos.y]]
-                                                    commands.append(my_commands)
-                                                    print(f"[ENCLOSED] {bomber.id} placing bomb at {bomber.pos} (current) to destroy obstacle at {obs}")
-                                                    return True
+                                                    # КРИТИЧНО: Проверяем, что escape_pos валидна
+                                                    if escape_pos and self.is_valid_position(escape_pos):
+                                                        # Бомба ставится на текущей позиции
+                                                        my_commands["path"] = [[bomber.pos.x, bomber.pos.y], [escape_pos.x, escape_pos.y]]
+                                                        my_commands["bombs"] = [[bomber.pos.x, bomber.pos.y]]
+                                                        commands.append(my_commands)
+                                                        print(f"[ENCLOSED] {bomber.id} placing bomb at {bomber.pos} (current) to destroy obstacle at {obs}")
+                                                        return True
+                                                    else:
+                                                        print(f"[ENCLOSED] {bomber.id} cannot place bomb - invalid escape position")
                             else:
                                 # Пробуем найти путь к позиции бомбы
                                 path_to_bomb = self.find_path(bomber.pos, bomb_pos, max_steps=5)
@@ -654,6 +708,10 @@ class GameClient:
         # Инициализируем продвинутую логику, если включена
         if self.use_advanced_logic and self.map_size:
             self._update_advanced_logic()
+        
+        # Инициализируем менеджер отряда
+        if self.squad_manager is None:
+            self.squad_manager = SquadManager(self)
     
     
     def _update_advanced_logic(self):
@@ -796,12 +854,17 @@ class GameClient:
                     
         return min_timer if is_in_danger else float('inf')
     
-    def find_path(self, start: Position, target: Position, max_steps: int = 20) -> Optional[List[Position]]:
+    def find_path(self, start: Position, target: Position, max_steps: int = 20,
+                  occupied_cells: Optional[Set[Position]] = None) -> Optional[List[Position]]:
         """
         A* поиск пути с учетом опасности от ВСЕХ бомб.
         Использует продвинутую логику Space-Time A*, если доступна.
+        Учитывает занятые клетки (occupied_cells) - добавляет штраф к стоимости.
         """
         if start == target: return [target]
+        
+        if occupied_cells is None:
+            occupied_cells = set()
         
         # Используем продвинутую логику, если доступна
         if self.use_advanced_logic and self.safe_pathfinder:
@@ -837,12 +900,21 @@ class GameClient:
                 
                 if not self.is_valid_position(neighbor): continue
                 
+                # Штраф за занятые клетки (юниты или планируемые цели)
+                cost = 1
+                if neighbor in occupied_cells:
+                    cost = 10  # Высокий штраф за занятые клетки
+                
+                # Проверяем, есть ли на этой клетке другой юнит
+                for other_bomber in self.bombers:
+                    if other_bomber.alive and other_bomber.pos == neighbor:
+                        cost = 10  # Штраф за клетку с союзником
+                        break
+                
                 # Check danger from ALL bombs
                 # Предполагаем скорость 2-3 клетки/сек. Время прибытия ~ g * 0.3
                 arrival_time = (g + 1) * 0.3 
                 danger_timer = self.get_blast_danger(neighbor, time_offset=0)
-                
-                cost = 1
                 
                 if danger_timer < float('inf'):
                     # КРИТИЧНО: избегаем позиций, где бомба взорвется пока мы там
@@ -891,6 +963,13 @@ class GameClient:
                 bomb_at_pos = any(b.pos == neighbor for b in self.bombs)
                 if bomb_at_pos and self.acrobatics_level < 1:
                     continue # Нельзя пройти
+                
+                # Штраф за занятые клетки (юниты или планируемые цели)
+                # Проверяем, есть ли на этой клетке другой юнит
+                for other_bomber in self.bombers:
+                    if other_bomber.alive and other_bomber.pos == neighbor:
+                        cost += 10  # Высокий штраф за клетку с союзником
+                        break
                 
                 new_g = g + cost
                 
@@ -1574,10 +1653,53 @@ class GameClient:
         planned_bomb_positions = {}  # bomber_id -> bomb_pos
         
         # Второй проход: выполняем действия с учетом координации
+        # Используем SquadManager для координации
+        if self.squad_manager:
+            squad_moves = self.squad_manager.coordinate_moves(
+                [b for b in self.bombers if b.alive and b.can_move],
+                assigned_targets
+            )
+        else:
+            squad_moves = {}
+        
         for bomber_idx, bomber in enumerate(self.bombers):
             if not bomber.alive or not bomber.can_move: continue
             
             my_commands = {"id": bomber.id, "path": [], "bombs": []}
+            
+            # ПРИОРИТЕТ -1: ОБРАБОТКА "КАШИ" И ОТЧАЯННОГО ПРОРЫВА (SquadManager)
+            if self.squad_manager and bomber.id in squad_moves:
+                squad_move = squad_moves[bomber.id]
+                if squad_move.action == 'MOVE' and squad_move.path:
+                    my_commands["path"] = [[x, y] for x, y in squad_move.path]
+                    commands.append(my_commands)
+                    print(f"[SQUAD] {bomber.id} executing squad move: {squad_move.action}")
+                    continue
+                elif squad_move.action == 'BOMB' and squad_move.bomb_pos:
+                    # Отчаянный прорыв - ставим бомбу
+                    # КРИТИЧНО: Должен быть escape путь!
+                    escape_found = False
+                    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        escape_pos = Position(bomber.pos.x + dx, bomber.pos.y + dy)
+                        if self.is_valid_position(escape_pos):
+                            # Проверяем, что escape позиция не в радиусе взрыва
+                            if escape_pos.manhattan_distance(squad_move.bomb_pos) >= self.bomb_range + 1:
+                                my_commands["bombs"] = [[squad_move.bomb_pos.x, squad_move.bomb_pos.y]]
+                                my_commands["path"] = [[bomber.pos.x, bomber.pos.y], [escape_pos.x, escape_pos.y]]
+                                commands.append(my_commands)
+                                print(f"[SQUAD] {bomber.id} DESPERATE BREAKTHROUGH - planting bomb with escape to {escape_pos}")
+                                escape_found = True
+                                break
+                    
+                    if not escape_found:
+                        print(f"[SQUAD] {bomber.id} DESPERATE BREAKTHROUGH - CANNOT find escape, skipping bomb!")
+                    continue
+                elif squad_move.action == 'CONTINUE':
+                    # Продолжаем обычную логику
+                    pass
+                else:
+                    # Другие действия от SquadManager
+                    continue
             
             # ПРИОРИТЕТ 0: УБЕЖАТЬ ОТ ВЗРЫВА (КРИТИЧНО!)
             # Проверяем опасность от ВСЕХ бомб (не только своих)
@@ -2133,11 +2255,16 @@ class GameClient:
                                 if bomber.pos == best_bomb_pos:
                                     # Проверяем, не попадут ли другие юниты под взрыв
                                     if not self.will_bomb_hit_other_bombers(best_bomb_pos, bomber.id):
-                                        # Бомба ставится на текущей позиции
-                                        my_commands["path"] = [[p.x, p.y] for p in escape_path[:8]]
-                                        my_commands["bombs"] = [[best_bomb_pos.x, best_bomb_pos.y]]
-                                        commands.append(my_commands)
-                                        continue
+                                        # КРИТИЧНО: Проверяем, что есть escape путь
+                                        if escape_path and len(escape_path) >= 2:
+                                            # Бомба ставится на текущей позиции
+                                            my_commands["path"] = [[p.x, p.y] for p in escape_path[:8]]
+                                            my_commands["bombs"] = [[best_bomb_pos.x, best_bomb_pos.y]]
+                                            commands.append(my_commands)
+                                            print(f"[OBSTACLE] {bomber.id} placing bomb at {best_bomb_pos} with escape path (len={len(escape_path)})")
+                                            continue
+                                        else:
+                                            print(f"[OBSTACLE] {bomber.id} cannot place bomb at {best_bomb_pos} - no escape path!")
                                 else:
                                     # Идем к позиции бомбы, бомба ставится на последней позиции пути
                                     path = self.find_path(bomber.pos, best_bomb_pos, max_steps=3)
@@ -2310,12 +2437,62 @@ class GameClient:
             
             commands = safe_commands
         
-        if commands:
-            print(f"[MOVE] Sending {len(commands)} commands")
-            for cmd in commands:
+        # КРИТИЧНО: Финальная проверка безопасности перед отправкой
+        # Если ставится бомба, должен быть путь отхода!
+        safe_commands = []
+        for cmd in commands:
+            has_bombs = cmd.get("bombs") and len(cmd.get("bombs", [])) > 0
+            has_path = cmd.get("path") and len(cmd.get("path", [])) > 0
+            
+            if has_bombs:
+                # Если ставится бомба, путь должен содержать хотя бы 2 позиции (текущая + escape)
+                if not has_path or len(cmd["path"]) < 2:
+                    print(f"[SAFETY] ⚠️ Removing UNSAFE bomb command for {cmd.get('id', 'unknown')} - NO ESCAPE PATH!")
+                    continue
+                
+                # Проверяем, что путь не заканчивается в радиусе взрыва
+                bomb_positions = [(b[0], b[1]) for b in cmd["bombs"]]
+                path_positions = [(p[0], p[1]) for p in cmd["path"]]
+                
+                is_safe = True
+                if path_positions:
+                    last_path_pos = path_positions[-1]
+                    for bomb_pos in bomb_positions:
+                        # Проверяем расстояние до бомбы (манхэттенское расстояние)
+                        dist_to_bomb = abs(last_path_pos[0] - bomb_pos[0]) + abs(last_path_pos[1] - bomb_pos[1])
+                        if dist_to_bomb <= self.bomb_range:
+                            print(f"[SAFETY] ⚠️ Removing UNSAFE bomb command for {cmd.get('id', 'unknown')} - path ends in blast radius (dist={dist_to_bomb}, range={self.bomb_range})!")
+                            is_safe = False
+                            break
+                        
+                        # Дополнительная проверка: путь должен вести ИЗ радиуса взрыва
+                        # Проверяем, что хотя бы одна позиция пути вне радиуса
+                        found_safe_pos = False
+                        for path_pos in path_positions[1:]:  # Пропускаем первую (текущая позиция)
+                            path_dist = abs(path_pos[0] - bomb_pos[0]) + abs(path_pos[1] - bomb_pos[1])
+                            if path_dist > self.bomb_range:
+                                found_safe_pos = True
+                                break
+                        
+                        if not found_safe_pos:
+                            print(f"[SAFETY] ⚠️ Removing UNSAFE bomb command for {cmd.get('id', 'unknown')} - path never leaves blast radius!")
+                            is_safe = False
+                            break
+                
+                if is_safe:
+                    safe_commands.append(cmd)
+            else:
+                # Команды без бомб всегда валидны
+                safe_commands.append(cmd)
+        
+        if safe_commands:
+            print(f"[MOVE] Sending {len(safe_commands)} commands (filtered {len(commands) - len(safe_commands)} unsafe)")
+            for cmd in safe_commands:
                 if cmd.get("bombs"):
-                    print(f"  [BOMB] {cmd['id']} placing bomb at {cmd['bombs'][0]}")
-            return self.move_bombers(commands)
+                    bomb_pos = cmd['bombs'][0]
+                    path_len = len(cmd.get("path", []))
+                    print(f"  [BOMB] {cmd['id']} placing bomb at {bomb_pos} (escape path len={path_len})")
+            return self.move_bombers(safe_commands)
         return {}
     
     def update_booster_stats(self):
