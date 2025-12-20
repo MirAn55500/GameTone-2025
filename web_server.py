@@ -17,7 +17,7 @@ CORS(app)  # Разрешаем CORS для визуализатора
 # Сначала пробуем загрузить из .env
 load_dotenv(".env")
 api_key = os.getenv("API_KEY")
-base_url = os.getenv("BASE_URL", "https://games-test.datsteam.dev")
+base_url = os.getenv("BASE_URL", "https://games.datsteam.dev")
 
 if not api_key:
     print("[WARNING] API_KEY не найден в .env!")

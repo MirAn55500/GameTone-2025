@@ -46,16 +46,26 @@ class GameAPI:
         self.last_analysis_time = 0
     
     def _rate_limit(self):
-        """Ограничение скорости запросов (3 в секунду)"""
+        """Ограничение скорости запросов (1 запрос в 1.5 секунды для избежания 429)"""
         now = time.time()
-        request_times = [t for t in self.request_times if now - t < 1.0]
+        
+        # Проверяем общий backoff
+        if now < self.backoff_until:
+            sleep_time = self.backoff_until - now
+            print(f"[RATE_LIMIT] In backoff, waiting {sleep_time:.1f}s")
+            time.sleep(sleep_time)
+            now = time.time()
+        
+        # Ограничиваем частоту запросов: минимум 1.5 секунды между запросами
+        request_times = [t for t in self.request_times if now - t < 2.0]
 
-        if len(request_times) >= 3:
-            sleep_time = 1.0 - (now - request_times[0])
+        if len(request_times) >= 1:
+            sleep_time = 1.5 - (now - request_times[0])
             if sleep_time > 0:
                 time.sleep(sleep_time)
+                now = time.time()
 
-        self.request_times.append(time.time())
+        self.request_times.append(now)
     
     def _get_cached(self, key: str) -> Optional[Dict]:
         """Получить данные из кэша"""
@@ -92,7 +102,8 @@ class GameAPI:
             
             if response.status_code == 429:
                 self.last_429_error = time.time()
-                self.backoff_until = time.time() + 2.0  # Ждем 2 секунды
+                self.backoff_until = time.time() + 5.0  # Ждем 5 секунд после ошибки 429
+                print(f"[RATE_LIMIT] Got 429 in get_arena, backoff until {self.backoff_until}")
                 if cache_key in self.cache:
                     return self.cache[cache_key]
                 raise Exception("Too many requests")
@@ -225,12 +236,19 @@ class GameAPI:
         if cached:
             return cached
 
+        # Проверяем backoff - если активен, возвращаем кэш
+        if time.time() < self.backoff_until:
+            if cache_key in self.cache:
+                return self.cache[cache_key]
+            return None  # Не критично, просто пропускаем
+
         try:
             self._rate_limit()
             response = self.session.get(f"{self.base_url}/api/booster", timeout=5)
 
             if response.status_code == 429:
-                print(f"[WARN] Rate limited (429) for boosters, using cache")
+                self.backoff_until = time.time() + 5.0
+                print(f"[WARN] Rate limited (429) for boosters, setting backoff for 5s")
                 if cache_key in self.cache:
                     return self.cache[cache_key]
                 return None  # Не критично, просто пропускаем
@@ -249,6 +267,9 @@ class GameAPI:
             data = response.json()
             print(f"[BOOSTERS] Data received: {data}")
             self._set_cache(cache_key, data)
+            # Сбрасываем backoff при успехе (частично, только если не было недавних ошибок)
+            if time.time() - self.last_429_error > 10.0:
+                self.backoff_until = 0
             return data
         except requests.exceptions.HTTPError as e:
             # Тихая обработка HTTP ошибок для boosters
@@ -325,9 +346,25 @@ class GameAPI:
         if not commands:
             return {}
         
+        # Проверяем backoff после ошибки 429
+        if time.time() < self.backoff_until:
+            print(f"[RATE_LIMIT] Still in backoff, waiting {self.backoff_until - time.time():.1f}s")
+            raise Exception("Rate limited, waiting...")
+        
         self._rate_limit()
         payload = {"bombers": commands}
         response = self.session.post(f"{self.base_url}/api/move", json=payload, timeout=5)
+        
+        if response.status_code == 429:
+            self.last_429_error = time.time()
+            self.backoff_until = time.time() + 5.0  # Ждем 5 секунд после ошибки 429
+            print(f"[RATE_LIMIT] Got 429 in move_bombers, backoff until {self.backoff_until}")
+            # Ждем перед повторной попыткой
+            time.sleep(5.0)
+            raise Exception("Too many requests")
+        
         response.raise_for_status()
+        # Сбрасываем backoff при успехе
+        self.backoff_until = 0
         return response.json()
 

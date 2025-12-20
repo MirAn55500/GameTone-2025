@@ -11,7 +11,7 @@ load_dotenv()
 
 # Получаем настройки из .env
 API_KEY = os.getenv("API_KEY")
-BASE_URL = os.getenv("BASE_URL", "https://games-test.datsteam.dev")
+BASE_URL = os.getenv("BASE_URL", "https://games.datsteam.dev")
 
 if __name__ == "__main__":
     if not API_KEY:
